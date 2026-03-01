@@ -150,53 +150,68 @@ app.post('/composite', async (req, res) => {
           .input(imageIn)
           .inputOptions(['-loop 1'])
       } else {
-        // Default: video clip background
         cmd = ffmpeg(videoIn)
       }
 
       if (audioIn) {
-        cmd = cmd.input(audioIn).audioCodec('aac').audioBitrate('128k')
+        cmd = cmd.input(audioIn)
       }
 
-      const filters = []
+      // Build video filter chain
+      const videoFilters = []
 
-      // lavfi color source defaults to bgr0; libx264 requires yuv420p.
-      // Without this, ffmpeg throws "Error reinitializing filters" when audio is present.
-      if (isTemplate) {
-        filters.push('format=yuv420p')
-      }
-
-      // Scale/crop image to fill 1080x1920 portrait
       if (backgroundType === 'image') {
-        filters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+        videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
       }
 
-      // On-screen text overlay — centered for template scenes, bottom for video
       if (FONT_PATH && onScreenText?.trim()) {
         const escaped = onScreenText.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
-        // For white canvas, use dark text so it's visible
         const fontColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'black' : 'white'
         const borderColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'white@0.5' : 'black@0.7'
         if (isTemplate) {
-          filters.push(
+          videoFilters.push(
             `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=80:fontcolor=${fontColor}:` +
             `x=(w-text_w)/2:y=(h-text_h)/2:borderw=4:bordercolor=${borderColor}:shadowx=2:shadowy=2`
           )
         } else {
-          filters.push(
+          videoFilters.push(
             `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=48:fontcolor=white:` +
             `x=(w-text_w)/2:y=h-120:borderw=3:bordercolor=black:shadowx=2:shadowy=2`
           )
         }
       }
 
-      // Watermark
       if (FONT_PATH && watermark) {
-        filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
+        videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
       }
 
-      if (filters.length) {
-        cmd = cmd.videoFilters(filters)
+      // ffmpeg 4.x lavfi color source outputs bgr0; libx264 requires yuv420p.
+      // Using complexFilter with explicit stream labels avoids the "Error reinitializing
+      // filters" crash that occurs with simple -vf when audio is present.
+      if (isTemplate) {
+        const chain = videoFilters.length
+          ? `[0:v]format=yuv420p,${videoFilters.join(',')}[vout]`
+          : `[0:v]format=yuv420p[vout]`
+        cmd = cmd.complexFilter([chain])
+
+        const outputOpts = [
+          '-map', '[vout]',
+          '-map', audioIn ? '1:a:0' : '0:a?',
+          '-c:v', 'libx264', '-c:a', 'aac',
+          '-preset', 'fast', '-crf', '23', '-movflags', '+faststart',
+        ]
+        if (audioIn) {
+          outputOpts.push('-shortest')
+        } else {
+          outputOpts.push('-t', String(duration || 10))
+        }
+        cmd.outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
+        return
+      }
+
+      // Video background — existing path unchanged
+      if (videoFilters.length) {
+        cmd = cmd.videoFilters(videoFilters)
       }
 
       const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart']
@@ -208,6 +223,7 @@ app.post('/composite', async (req, res) => {
 
       cmd
         .videoCodec('libx264')
+        .audioCodec('aac').audioBitrate('128k')
         .outputOptions(outputOpts)
         .output(videoOut)
         .on('end', resolve)

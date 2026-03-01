@@ -11,7 +11,9 @@ const http = require('http')
 
 ffmpeg.setFfmpegPath(ffmpegPath)
 
-// Detect a usable font file for drawtext filter
+// Detect a usable font file for drawtext filter.
+// Checks known system paths first, then searches the Nix store (Railway/NixOS),
+// then falls back to fc-match.
 function detectFont() {
   const candidates = [
     '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
@@ -22,10 +24,23 @@ function detectFont() {
   for (const f of candidates) {
     if (fs.existsSync(f)) return f
   }
+  // Nix store — freefont_ttf installs to /nix/store/{hash}-freefont-ttf-*/share/fonts/truetype/
   try {
-    const result = execSync('fc-list : file | grep -i "\\.ttf" | head -1', { timeout: 3000 })
+    const nixFont = execSync('find /nix/store -name "FreeSans.ttf" 2>/dev/null | head -1', { timeout: 5000 })
+      .toString().trim()
+    if (nixFont && fs.existsSync(nixFont)) return nixFont
+  } catch {}
+  // Fallback: any TTF via fc-match
+  try {
+    const fcMatch = execSync('fc-match -f "%{file}" :spacing=proportional:fontformat=TrueType 2>/dev/null', { timeout: 3000 })
+      .toString().trim()
+    if (fcMatch && fs.existsSync(fcMatch)) return fcMatch
+  } catch {}
+  // Last resort: any TTF via fc-list
+  try {
+    const fcList = execSync('fc-list : file | grep -i "\\.ttf" | head -1', { timeout: 3000 })
       .toString().trim().split(':')[0]
-    if (result && fs.existsSync(result)) return result
+    if (fcList && fs.existsSync(fcList)) return fcList
   } catch {}
   return null
 }
@@ -89,9 +104,15 @@ function cleanup(...files) {
 // Burns voiceover audio + on-screen text onto a raw visual clip.
 // Body: { visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark, quality }
 // Returns: { outputUrl }
+//
+// Duration behaviour:
+//   - With voiceover: uses -shortest so the clip trims to whichever ends first
+//     (voiceover or visual). Script generation targets word count ≈ scene duration
+//     so they should align. -shortest is the safety net.
+//   - Without voiceover: uses -t <duration> to cap at the intended scene length.
 app.post('/composite', async (req, res) => {
   const { visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark } = req.body
-  slog('composite', 'Start', { outputKey })
+  slog('composite', 'Start', { outputKey, hasVoiceover: !!voiceoverUrl })
 
   const videoIn = tmpFile('.mp4')
   const audioIn = voiceoverUrl ? tmpFile('.mp3') : null
@@ -127,9 +148,18 @@ app.post('/composite', async (req, res) => {
         cmd = cmd.videoFilters(filters)
       }
 
+      const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart']
+      if (audioIn) {
+        // Trim to whichever stream ends first (voiceover or visual)
+        outputOpts.push('-shortest')
+      } else {
+        // No audio — cap at intended scene duration
+        outputOpts.push(`-t ${duration || 10}`)
+      }
+
       cmd
         .videoCodec('libx264')
-        .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', `-t ${duration || 10}`])
+        .outputOptions(outputOpts)
         .output(videoOut)
         .on('end', resolve)
         .on('error', reject)

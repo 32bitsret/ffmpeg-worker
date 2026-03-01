@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "ffmpeg", "freefont_ttf"]
+nixPkgs = ["nodejs_20", "ffmpeg", "freefont_ttf", "fontconfig"]
 
 [phases.install]
 cmds = ["npm ci"]

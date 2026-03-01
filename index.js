@@ -141,7 +141,7 @@ app.post('/composite', async (req, res) => {
 
       // Watermark
       if (FONT_PATH && watermark) {
-        filters.push(`drawtext=fontfile='${FONT_PATH}':text='ugcforapps.com':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
+        filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
       }
 
       if (filters.length) {

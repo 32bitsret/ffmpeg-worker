@@ -181,11 +181,14 @@ app.post('/composite', async (req, res) => {
 
 // ── POST /render ───────────────────────────────────────────────────────────────
 // Concatenates multiple composited clip URLs into a single final export MP4.
-// Body: { clipUrls, outputKey, quality, watermark }
+// Body: { clipUrls, outputKey, backgroundMusicUrl?, musicVolume?, quality, watermark }
 // Returns: { outputUrl }
+//
+// If backgroundMusicUrl is provided, the music is looped to match the video
+// duration and mixed under the voiceover at musicVolume (default 0.2).
 app.post('/render', async (req, res) => {
-  const { clipUrls, outputKey } = req.body
-  slog('render', 'Start', { clips: clipUrls?.length, outputKey })
+  const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2 } = req.body
+  slog('render', 'Start', { clips: clipUrls?.length, outputKey, hasMusic: !!backgroundMusicUrl })
 
   if (!clipUrls?.length) {
     return res.status(400).json({ error: 'No clip URLs provided' })
@@ -193,6 +196,7 @@ app.post('/render', async (req, res) => {
 
   const clipFiles = []
   const listFile = tmpFile('.txt')
+  const musicFile = backgroundMusicUrl ? tmpFile('.mp3') : null
   const videoOut = tmpFile('.mp4')
 
   try {
@@ -203,17 +207,48 @@ app.post('/render', async (req, res) => {
       clipFiles.push(f)
     }
 
+    // Download background music if provided
+    if (musicFile) await download(backgroundMusicUrl, musicFile)
+
     // Write concat list
     const listContent = clipFiles.map(f => `file '${f}'`).join('\n')
     fs.writeFileSync(listFile, listContent)
 
     await new Promise((resolve, reject) => {
-      ffmpeg()
+      let cmd = ffmpeg()
         .input(listFile)
         .inputOptions(['-f concat', '-safe 0'])
-        .videoCodec('libx264')
-        .audioCodec('aac')
-        .outputOptions(['-preset fast', '-crf 20', '-movflags +faststart'])
+
+      if (musicFile) {
+        // Loop music so it covers the full video duration
+        cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
+
+        // Mix voiceover (from concat) under background music at musicVolume
+        // [0:a] = voiceover from concat, [1:a] = looped music
+        // amix duration=first stops at the end of the concat audio (voiceover)
+        cmd = cmd
+          .complexFilter([
+            `[1:a]volume=${musicVolume}[music]`,
+            `[0:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
+          ])
+          .outputOptions([
+            '-map 0:v:0',
+            '-map [aout]',
+            '-c:v libx264',
+            '-c:a aac',
+            '-preset fast',
+            '-crf 20',
+            '-movflags +faststart',
+            '-shortest',
+          ])
+      } else {
+        cmd = cmd
+          .videoCodec('libx264')
+          .audioCodec('aac')
+          .outputOptions(['-preset fast', '-crf 20', '-movflags +faststart'])
+      }
+
+      cmd
         .output(videoOut)
         .on('end', resolve)
         .on('error', reject)
@@ -227,7 +262,7 @@ app.post('/render', async (req, res) => {
     slog('render', 'Error', { error: err.message })
     res.status(500).json({ error: err.message })
   } finally {
-    cleanup(...clipFiles, listFile, videoOut)
+    cleanup(...clipFiles, listFile, musicFile, videoOut)
   }
 })
 

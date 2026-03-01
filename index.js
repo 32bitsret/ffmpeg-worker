@@ -100,6 +100,73 @@ function cleanup(...files) {
   }
 }
 
+// Word-wrap text into lines no longer than maxChars.
+// Returns a string with \n separators for ffmpeg drawtext.
+function wrapText(text, maxChars) {
+  const words = text.trim().split(/\s+/)
+  const lines = []
+  let line = ''
+  for (const word of words) {
+    const candidate = line ? line + ' ' + word : word
+    if (candidate.length > maxChars && line) {
+      lines.push(line)
+      line = word
+    } else {
+      line = candidate
+    }
+  }
+  if (line) lines.push(line)
+  return lines.join('\n')
+}
+
+// Escape text for ffmpeg drawtext: backslashes, quotes, colons, newlines.
+function escapeDrawtext(text) {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/\n/g, '\\n')
+}
+
+// Build a drawtext filter with automatic word-wrap and dynamic font sizing.
+// isTemplate: true → centred large text (canvas/image); false → bottom caption (video)
+function buildTextFilter(fontPath, text, isTemplate, canvasStyle) {
+  if (!fontPath || !text?.trim()) return null
+
+  const len = text.trim().length
+  let fontSize, maxChars
+
+  if (isTemplate) {
+    // Scale down font and wrap so text always fits within ~900px safe area
+    if      (len <= 10) { fontSize = 90; maxChars = 10 }
+    else if (len <= 16) { fontSize = 80; maxChars = 16 }
+    else if (len <= 24) { fontSize = 68; maxChars = 20 }
+    else                { fontSize = 56; maxChars = 24 }
+  } else {
+    fontSize = 48
+    maxChars = 24
+  }
+
+  const wrapped  = wrapText(text.trim(), maxChars)
+  const escaped  = escapeDrawtext(wrapped)
+  const fontColor   = (isTemplate && canvasStyle === 'white') ? 'black' : 'white'
+  const borderColor = (isTemplate && canvasStyle === 'white') ? 'white@0.5' : 'black@0.7'
+
+  if (isTemplate) {
+    return (
+      `drawtext=fontfile='${fontPath}':text='${escaped}':fontsize=${fontSize}` +
+      `:fontcolor=${fontColor}:x=(w-text_w)/2:y=(h-text_h)/2` +
+      `:borderw=4:bordercolor=${borderColor}:shadowx=2:shadowy=2:line_spacing=12`
+    )
+  } else {
+    return (
+      `drawtext=fontfile='${fontPath}':text='${escaped}':fontsize=${fontSize}` +
+      `:fontcolor=white:x=(w-text_w)/2:y=h-140` +
+      `:borderw=3:bordercolor=black:shadowx=2:shadowy=2:line_spacing=8`
+    )
+  }
+}
+
 // ── POST /composite ────────────────────────────────────────────────────────────
 // Burns voiceover audio + on-screen text onto a background.
 // Body: {
@@ -164,22 +231,8 @@ app.post('/composite', async (req, res) => {
         videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
       }
 
-      if (FONT_PATH && onScreenText?.trim()) {
-        const escaped = onScreenText.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
-        const fontColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'black' : 'white'
-        const borderColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'white@0.5' : 'black@0.7'
-        if (isTemplate) {
-          videoFilters.push(
-            `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=80:fontcolor=${fontColor}:` +
-            `x=(w-text_w)/2:y=(h-text_h)/2:borderw=4:bordercolor=${borderColor}:shadowx=2:shadowy=2`
-          )
-        } else {
-          videoFilters.push(
-            `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=48:fontcolor=white:` +
-            `x=(w-text_w)/2:y=h-120:borderw=3:bordercolor=black:shadowx=2:shadowy=2`
-          )
-        }
-      }
+      const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, canvasStyle)
+      if (textFilter) videoFilters.push(textFilter)
 
       if (FONT_PATH && watermark) {
         videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)

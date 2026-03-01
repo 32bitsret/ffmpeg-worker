@@ -2,6 +2,7 @@ const express = require('express')
 const ffmpeg = require('fluent-ffmpeg')
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3')
+const { execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
@@ -9,6 +10,28 @@ const https = require('https')
 const http = require('http')
 
 ffmpeg.setFfmpegPath(ffmpegPath)
+
+// Detect a usable font file for drawtext filter
+function detectFont() {
+  const candidates = [
+    '/nix/var/nix/profiles/default/share/fonts/truetype/FreeSans.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/TTF/DejaVuSans.ttf',
+  ]
+  for (const f of candidates) {
+    if (fs.existsSync(f)) return f
+  }
+  try {
+    const result = execSync('fc-list : file | grep -i "freesans\\|dejavusans\\|liberation" | head -1', { timeout: 3000 })
+      .toString().trim().split(':')[0]
+    if (result && fs.existsSync(result)) return result
+  } catch {}
+  return null
+}
+
+const FONT_PATH = detectFont()
+console.log(JSON.stringify({ ts: new Date().toISOString(), msg: `Font: ${FONT_PATH || 'none — drawtext disabled'}` }))
 
 const app = express()
 app.use(express.json())
@@ -87,17 +110,17 @@ app.post('/composite', async (req, res) => {
 
       // On-screen text overlay
       const filters = []
-      if (onScreenText?.trim()) {
-        const escaped = onScreenText.replace(/'/g, "\\'").replace(/:/g, '\\:')
+      if (FONT_PATH && onScreenText?.trim()) {
+        const escaped = onScreenText.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
         filters.push(
-          `drawtext=text='${escaped}':fontsize=48:fontcolor=white:x=(w-text_w)/2:y=h-120:` +
-          `borderw=3:bordercolor=black:shadowx=2:shadowy=2`
+          `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=48:fontcolor=white:` +
+          `x=(w-text_w)/2:y=h-120:borderw=3:bordercolor=black:shadowx=2:shadowy=2`
         )
       }
 
       // Watermark
-      if (watermark) {
-        filters.push(`drawtext=text='ugcforapps.com':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
+      if (FONT_PATH && watermark) {
+        filters.push(`drawtext=fontfile='${FONT_PATH}':text='ugcforapps.com':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
       }
 
       if (filters.length) {

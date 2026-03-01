@@ -150,8 +150,10 @@ app.post('/composite', async (req, res) => {
 
       const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart']
       if (audioIn) {
-        // Trim to whichever stream ends first (voiceover or visual)
-        outputOpts.push('-shortest')
+        // Explicitly map video from input 0 and audio from input 1 (voiceover).
+        // This discards any audio embedded in the visual clip so the voiceover
+        // is the sole audio track. -shortest then trims the video to voiceover length.
+        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
       } else {
         // No audio — cap at intended scene duration
         outputOpts.push(`-t ${duration || 10}`)

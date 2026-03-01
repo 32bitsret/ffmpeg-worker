@@ -133,7 +133,8 @@ app.post('/composite', async (req, res) => {
 
   try {
     if (videoIn) await download(visualClipUrl, videoIn)
-    if (imageIn) await download(imageUrl, imageIn)
+    if (imageIn && imageUrl) await download(imageUrl, imageIn)
+    else if (imageIn && !imageUrl) return res.status(400).json({ error: 'backgroundType=image requires imageUrl' })
     if (audioIn) await download(voiceoverUrl, audioIn)
 
     await new Promise((resolve, reject) => {

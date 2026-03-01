@@ -223,18 +223,20 @@ app.post('/render', async (req, res) => {
         // Loop music so it covers the full video duration
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
 
-        // Mix voiceover (from concat) under background music at musicVolume
-        // [0:a] = voiceover from concat, [1:a] = looped music
-        // amix duration=first stops at the end of the concat audio (voiceover)
-        // Pre-scale voice to 2× so after amix's built-in ÷2 normalization it lands at 1.0.
-        // Pre-scale music to 2×musicVolume for the same reason.
-        // duration=longest keeps music playing until the longest stream ends (looped music
-        // is infinite, so -shortest in outputOptions trims the final output to video length).
+        // Music mixing strategy:
+        // - Pre-scale voice to 2× and music to 2×musicVolume so that after amix's
+        //   built-in ÷2 normalization the effective levels are 1.0 and musicVolume.
+        // - apad extends the voiceover with silence so it covers the full video length.
+        //   Without this, amix stops when the voiceover ends even if the video continues.
+        // - Music is [1:a] with -stream_loop -1 (looped), so it outlasts the video.
+        // - amix duration=first uses the first stream ([voice_padded]) to set length.
+        //   Since apad makes voice_padded infinite, amix runs indefinitely.
+        // - -shortest in outputOptions then trims the final output to the video length.
         cmd = cmd
           .complexFilter([
-            `[0:a]volume=2.0[voice]`,
+            `[0:a]apad,volume=2.0[voice_padded]`,
             `[1:a]volume=${(musicVolume * 2).toFixed(3)}[music]`,
-            `[voice][music]amix=inputs=2:duration=longest:dropout_transition=2[aout]`,
+            `[voice_padded][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
           ])
           .outputOptions([
             '-map 0:v:0',

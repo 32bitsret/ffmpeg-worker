@@ -101,42 +101,86 @@ function cleanup(...files) {
 }
 
 // ── POST /composite ────────────────────────────────────────────────────────────
-// Burns voiceover audio + on-screen text onto a raw visual clip.
-// Body: { visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark, quality }
+// Burns voiceover audio + on-screen text onto a background.
+// Body: {
+//   backgroundType?: 'video' (default) | 'canvas' | 'image',
+//   visualClipUrl?,   // for backgroundType='video'
+//   canvasStyle?,     // 'white' | 'dark' | 'muted' — for backgroundType='canvas'
+//   imageUrl?,        // for backgroundType='image'
+//   voiceoverUrl, onScreenText, duration, outputKey, watermark, quality
+// }
 // Returns: { outputUrl }
 //
 // Duration behaviour:
-//   - With voiceover: uses -shortest so the clip trims to whichever ends first
-//     (voiceover or visual). Script generation targets word count ≈ scene duration
-//     so they should align. -shortest is the safety net.
-//   - Without voiceover: uses -t <duration> to cap at the intended scene length.
-app.post('/composite', async (req, res) => {
-  const { visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark } = req.body
-  slog('composite', 'Start', { outputKey, hasVoiceover: !!voiceoverUrl })
+//   - With voiceover: -shortest trims to whichever ends first
+//   - Without voiceover: -t <duration> caps at intended scene length
+//   - canvas: lavfi color source already has d=<duration>; -shortest trims to audio
 
-  const videoIn = tmpFile('.mp4')
+const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
+
+app.post('/composite', async (req, res) => {
+  const {
+    visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
+    backgroundType = 'video', canvasStyle = 'dark', imageUrl,
+  } = req.body
+  slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl })
+
+  const isTemplate = backgroundType === 'canvas' || backgroundType === 'image'
+  const videoIn = backgroundType === 'video' ? tmpFile('.mp4') : null
+  const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
   const audioIn = voiceoverUrl ? tmpFile('.mp3') : null
   const videoOut = tmpFile('.mp4')
 
   try {
-    await download(visualClipUrl, videoIn)
+    if (videoIn) await download(visualClipUrl, videoIn)
+    if (imageIn) await download(imageUrl, imageIn)
     if (audioIn) await download(voiceoverUrl, audioIn)
 
     await new Promise((resolve, reject) => {
-      let cmd = ffmpeg(videoIn)
+      let cmd
+
+      if (backgroundType === 'canvas') {
+        const hex = CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+        cmd = ffmpeg()
+          .input(`color=c=${hex}:s=1080x1920:r=30:d=${duration || 10}`)
+          .inputOptions(['-f lavfi'])
+      } else if (backgroundType === 'image') {
+        cmd = ffmpeg()
+          .input(imageIn)
+          .inputOptions(['-loop 1'])
+      } else {
+        // Default: video clip background
+        cmd = ffmpeg(videoIn)
+      }
 
       if (audioIn) {
         cmd = cmd.input(audioIn).audioCodec('aac').audioBitrate('128k')
       }
 
-      // On-screen text overlay
       const filters = []
+
+      // Scale/crop image to fill 1080x1920 portrait
+      if (backgroundType === 'image') {
+        filters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+      }
+
+      // On-screen text overlay — centered for template scenes, bottom for video
       if (FONT_PATH && onScreenText?.trim()) {
         const escaped = onScreenText.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
-        filters.push(
-          `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=48:fontcolor=white:` +
-          `x=(w-text_w)/2:y=h-120:borderw=3:bordercolor=black:shadowx=2:shadowy=2`
-        )
+        // For white canvas, use dark text so it's visible
+        const fontColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'black' : 'white'
+        const borderColor = (backgroundType === 'canvas' && canvasStyle === 'white') ? 'white@0.5' : 'black@0.7'
+        if (isTemplate) {
+          filters.push(
+            `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=80:fontcolor=${fontColor}:` +
+            `x=(w-text_w)/2:y=(h-text_h)/2:borderw=4:bordercolor=${borderColor}:shadowx=2:shadowy=2`
+          )
+        } else {
+          filters.push(
+            `drawtext=fontfile='${FONT_PATH}':text='${escaped}':fontsize=48:fontcolor=white:` +
+            `x=(w-text_w)/2:y=h-120:borderw=3:bordercolor=black:shadowx=2:shadowy=2`
+          )
+        }
       }
 
       // Watermark
@@ -150,12 +194,8 @@ app.post('/composite', async (req, res) => {
 
       const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart']
       if (audioIn) {
-        // Explicitly map video from input 0 and audio from input 1 (voiceover).
-        // This discards any audio embedded in the visual clip so the voiceover
-        // is the sole audio track. -shortest then trims the video to voiceover length.
         outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
       } else {
-        // No audio — cap at intended scene duration
         outputOpts.push(`-t ${duration || 10}`)
       }
 
@@ -175,7 +215,7 @@ app.post('/composite', async (req, res) => {
     slog('composite', 'Error', { error: err.message })
     res.status(500).json({ error: err.message })
   } finally {
-    cleanup(videoIn, audioIn, videoOut)
+    cleanup(videoIn, imageIn, audioIn, videoOut)
   }
 })
 

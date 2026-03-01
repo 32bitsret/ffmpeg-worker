@@ -229,7 +229,7 @@ app.post('/render', async (req, res) => {
         cmd = cmd
           .complexFilter([
             `[1:a]volume=${musicVolume}[music]`,
-            `[0:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
+            `[0:a][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
           ])
           .outputOptions([
             '-map 0:v:0',

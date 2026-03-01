@@ -226,10 +226,14 @@ app.post('/render', async (req, res) => {
         // Mix voiceover (from concat) under background music at musicVolume
         // [0:a] = voiceover from concat, [1:a] = looped music
         // amix duration=first stops at the end of the concat audio (voiceover)
+        // Pre-scale voice to 2× so after amix's built-in ÷2 normalization it lands at 1.0.
+        // Pre-scale music to 2×musicVolume for the same reason.
+        // This avoids the normalize=0 option which isn't available on all FFmpeg builds.
         cmd = cmd
           .complexFilter([
-            `[1:a]volume=${musicVolume}[music]`,
-            `[0:a][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`,
+            `[0:a]volume=2.0[voice]`,
+            `[1:a]volume=${(musicVolume * 2).toFixed(3)}[music]`,
+            `[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
           ])
           .outputOptions([
             '-map 0:v:0',

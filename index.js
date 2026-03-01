@@ -228,12 +228,13 @@ app.post('/render', async (req, res) => {
         // amix duration=first stops at the end of the concat audio (voiceover)
         // Pre-scale voice to 2× so after amix's built-in ÷2 normalization it lands at 1.0.
         // Pre-scale music to 2×musicVolume for the same reason.
-        // This avoids the normalize=0 option which isn't available on all FFmpeg builds.
+        // duration=longest keeps music playing until the longest stream ends (looped music
+        // is infinite, so -shortest in outputOptions trims the final output to video length).
         cmd = cmd
           .complexFilter([
             `[0:a]volume=2.0[voice]`,
             `[1:a]volume=${(musicVolume * 2).toFixed(3)}[music]`,
-            `[voice][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+            `[voice][music]amix=inputs=2:duration=longest:dropout_transition=2[aout]`,
           ])
           .outputOptions([
             '-map 0:v:0',

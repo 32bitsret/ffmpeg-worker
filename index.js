@@ -160,6 +160,12 @@ app.post('/composite', async (req, res) => {
 
       const filters = []
 
+      // lavfi color source defaults to bgr0; libx264 requires yuv420p.
+      // Without this, ffmpeg throws "Error reinitializing filters" when audio is present.
+      if (isTemplate) {
+        filters.push('format=yuv420p')
+      }
+
       // Scale/crop image to fill 1080x1920 portrait
       if (backgroundType === 'image') {
         filters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')

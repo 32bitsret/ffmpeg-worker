@@ -128,9 +128,20 @@ function escapeDrawtext(text) {
     .replace(/\n/g, '\\n')
 }
 
+// Returns true if a hex color (e.g. '#f5f5f5' or '0xf5f5f5') is perceptually light.
+function isLightColor(hex) {
+  const clean = hex.replace(/^#|^0x/i, '')
+  const r = parseInt(clean.slice(0, 2), 16)
+  const g = parseInt(clean.slice(2, 4), 16)
+  const b = parseInt(clean.slice(4, 6), 16)
+  // Perceived luminance
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128
+}
+
 // Build a drawtext filter with automatic word-wrap and dynamic font sizing.
 // isTemplate: true → centred large text (canvas/image); false → bottom caption (video)
-function buildTextFilter(fontPath, text, isTemplate, canvasStyle) {
+// bgIsLight: used to pick font/border color when isTemplate is true
+function buildTextFilter(fontPath, text, isTemplate, bgIsLight) {
   if (!fontPath || !text?.trim()) return null
 
   const len = text.trim().length
@@ -149,8 +160,8 @@ function buildTextFilter(fontPath, text, isTemplate, canvasStyle) {
 
   const wrapped  = wrapText(text.trim(), maxChars)
   const escaped  = escapeDrawtext(wrapped)
-  const fontColor   = (isTemplate && canvasStyle === 'white') ? 'black' : 'white'
-  const borderColor = (isTemplate && canvasStyle === 'white') ? 'white@0.5' : 'black@0.7'
+  const fontColor   = (isTemplate && bgIsLight) ? 'black' : 'white'
+  const borderColor = (isTemplate && bgIsLight) ? 'white@0.5' : 'black@0.7'
 
   if (isTemplate) {
     return (
@@ -173,6 +184,7 @@ function buildTextFilter(fontPath, text, isTemplate, canvasStyle) {
 //   backgroundType?: 'video' (default) | 'canvas' | 'image',
 //   visualClipUrl?,   // for backgroundType='video'
 //   canvasStyle?,     // 'white' | 'dark' | 'muted' — for backgroundType='canvas'
+//   canvasColor?,     // inferred brand hex e.g. '#7c3aed'; overrides canvasStyle when set
 //   imageUrl?,        // for backgroundType='image'
 //   voiceoverUrl, onScreenText, duration, outputKey, watermark, quality
 // }
@@ -188,7 +200,7 @@ const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
 app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
-    backgroundType = 'video', canvasStyle = 'dark', imageUrl,
+    backgroundType = 'video', canvasStyle = 'dark', canvasColor = null, imageUrl,
   } = req.body
   slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl })
 
@@ -208,7 +220,8 @@ app.post('/composite', async (req, res) => {
       let cmd
 
       if (backgroundType === 'canvas') {
-        const hex = CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+        const rawHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+        const hex = rawHex.startsWith('#') ? '0x' + rawHex.slice(1) : rawHex
         cmd = ffmpeg()
           .input(`color=c=${hex}:s=1080x1920:r=30:d=${duration || 10}`)
           .inputOptions(['-f lavfi'])
@@ -231,7 +244,9 @@ app.post('/composite', async (req, res) => {
         videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
       }
 
-      const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, canvasStyle)
+      const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+      const bgIsLight = isTemplate ? isLightColor(effectiveHex) : false
+      const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, bgIsLight)
       if (textFilter) videoFilters.push(textFilter)
 
       if (FONT_PATH && watermark) {

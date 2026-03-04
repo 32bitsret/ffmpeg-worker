@@ -189,11 +189,6 @@ function buildTextFilter(fontPath, text, isTemplate, bgIsLight) {
 //   voiceoverUrl, onScreenText, duration, outputKey, watermark, quality
 // }
 // Returns: { outputUrl }
-//
-// Duration behaviour:
-//   - With voiceover: -shortest trims to whichever ends first
-//   - Without voiceover: -t <duration> caps at intended scene length
-//   - canvas: lavfi color source already has d=<duration>; -shortest trims to audio
 
 const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
 
@@ -249,13 +244,10 @@ app.post('/composite', async (req, res) => {
       const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, bgIsLight)
       if (textFilter) videoFilters.push(textFilter)
 
-      if (FONT_PATH && watermark === true) { // Use strict boolean check
+      if (FONT_PATH && watermark === true) {
         videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
       }
 
-      // ffmpeg 4.x lavfi color source outputs bgr0; libx264 requires yuv420p.
-      // Using complexFilter with explicit stream labels avoids the "Error reinitializing
-      // filters" crash that occurs with simple -vf when audio is present.
       if (isTemplate) {
         const chain = videoFilters.length
           ? `[0:v]format=yuv420p,${videoFilters.join(',')}[vout]`
@@ -267,6 +259,7 @@ app.post('/composite', async (req, res) => {
           '-map', audioIn ? '1:a:0' : '0:a?',
           '-c:v', 'libx264', '-c:a', 'aac',
           '-preset', 'fast', '-crf', '23', '-movflags', '+faststart',
+          '-threads', '4'
         ]
         if (audioIn) {
           outputOpts.push('-shortest')
@@ -277,12 +270,11 @@ app.post('/composite', async (req, res) => {
         return
       }
 
-      // Video background — existing path unchanged
       if (videoFilters.length) {
         cmd = cmd.videoFilters(videoFilters)
       }
 
-      const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart']
+      const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart', '-threads 4']
       if (audioIn) {
         outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
       } else {
@@ -310,13 +302,6 @@ app.post('/composite', async (req, res) => {
   }
 })
 
-// ── POST /render ───────────────────────────────────────────────────────────────
-// Concatenates multiple composited clip URLs into a single final export MP4.
-// Body: { clipUrls, outputKey, backgroundMusicUrl?, musicVolume?, quality, watermark }
-// Returns: { outputUrl }
-//
-// If backgroundMusicUrl is provided, the music is looped to match the video
-// duration and mixed under the voiceover at musicVolume (default 0.2).
 app.post('/render', async (req, res) => {
   const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2 } = req.body
   slog('render', 'Start', { clips: clipUrls?.length, outputKey, hasMusic: !!backgroundMusicUrl })
@@ -331,17 +316,14 @@ app.post('/render', async (req, res) => {
   const videoOut = tmpFile('.mp4')
 
   try {
-    // Download all clips
     for (let i = 0; i < clipUrls.length; i++) {
       const f = tmpFile('.mp4')
       await download(clipUrls[i], f)
       clipFiles.push(f)
     }
 
-    // Download background music if provided
     if (musicFile) await download(backgroundMusicUrl, musicFile)
 
-    // Write concat list
     const listContent = clipFiles.map(f => `file '${f}'`).join('\n')
     fs.writeFileSync(listFile, listContent)
 
@@ -351,18 +333,7 @@ app.post('/render', async (req, res) => {
         .inputOptions(['-f concat', '-safe 0'])
 
       if (musicFile) {
-        // Loop music so it covers the full video duration
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
-
-        // Music mixing strategy:
-        // - Pre-scale voice to 2× and music to 2×musicVolume so that after amix's
-        //   built-in ÷2 normalization the effective levels are 1.0 and musicVolume.
-        // - apad extends the voiceover with silence so it covers the full video length.
-        //   Without this, amix stops when the voiceover ends even if the video continues.
-        // - Music is [1:a] with -stream_loop -1 (looped), so it outlasts the video.
-        // - amix duration=first uses the first stream ([voice_padded]) to set length.
-        //   Since apad makes voice_padded infinite, amix runs indefinitely.
-        // - -shortest in outputOptions then trims the final output to the video length.
         cmd = cmd
           .complexFilter([
             `[0:a]apad,volume=2.0[voice_padded]`,
@@ -378,12 +349,13 @@ app.post('/render', async (req, res) => {
             '-crf 20',
             '-movflags +faststart',
             '-shortest',
+            '-threads 4'
           ])
       } else {
         cmd = cmd
           .videoCodec('libx264')
           .audioCodec('aac')
-          .outputOptions(['-preset fast', '-crf 20', '-movflags +faststart'])
+          .outputOptions(['-preset fast', '-crf 20', '-movflags +faststart', '-threads 4'])
       }
 
       cmd

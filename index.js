@@ -249,7 +249,7 @@ app.post('/composite', async (req, res) => {
       const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, bgIsLight)
       if (textFilter) videoFilters.push(textFilter)
 
-      if (FONT_PATH && watermark) {
+      if (FONT_PATH && watermark === true) { // Use strict boolean check
         videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
       }
 

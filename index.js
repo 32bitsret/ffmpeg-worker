@@ -241,8 +241,29 @@ app.post('/composite', async (req, res) => {
   }
 })
 
+function buildMusicVolumeFilter(timeline, fallbackVolume) {
+  if (!timeline?.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
+
+  let t = 0
+  const mutedRanges = []
+  for (const seg of timeline) {
+    const start = t
+    const end = t + (seg.duration || 5)
+    if (seg.volume === 0) {
+      mutedRanges.push([start, end])
+    }
+    t = end
+  }
+
+  if (!mutedRanges.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
+
+  const mutedExpr = mutedRanges.map(([s, e]) => `between(t,${s},${e})`).join('+')
+  const targetVol = (fallbackVolume * 2).toFixed(3)
+  return `volume='if(${mutedExpr},0,${targetVol})'`
+}
+
 app.post('/render', async (req, res) => {
-  const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2 } = req.body
+  const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2, musicVolumeTimeline } = req.body
   slog('render', 'Start', { clips: clipUrls?.length, outputKey, hasMusic: !!backgroundMusicUrl })
   if (!clipUrls?.length) return res.status(400).json({ error: 'No clip URLs provided' })
   const clipFiles = []
@@ -261,10 +282,11 @@ app.post('/render', async (req, res) => {
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
       if (musicFile) {
+        const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
         cmd = cmd.complexFilter([
           `[0:a]apad,volume=2.0[voice_padded]`,
-          `[1:a]volume=${(musicVolume * 2).toFixed(3)}[music]`,
+          `[1:a]${musicVolumeFilter}[music]`,
           `[voice_padded][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]', '-c:v libx264', '-c:a aac',

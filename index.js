@@ -161,13 +161,13 @@ const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
 app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
-    backgroundType = 'video', canvasStyle = 'dark', canvasColor = null, imageUrl,
+    backgroundType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
   } = req.body
   slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl })
 
-  const isTemplate = backgroundType === 'canvas' || backgroundType === 'image'
+  const isTemplate = backgroundType === 'canvas'
   // NEW: canvas now behaves like cinematic (uses video input)
-  const videoIn = (backgroundType === 'video' || backgroundType === 'canvas') ? tmpFile('.mp4') : null
+  const videoIn = (backgroundType === 'cinematic' || backgroundType === 'video' || backgroundType === 'canvas') ? tmpFile('.mp4') : null
   const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
   const audioIn = voiceoverUrl ? tmpFile('.mp3') : null
   const videoOut = tmpFile('.mp4')

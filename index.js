@@ -11,6 +11,16 @@ const http = require('http')
 
 ffmpeg.setFfmpegPath(ffmpegPath)
 
+// Returns the duration (seconds, float) of a local video file, or null on error.
+function probeFileDuration(filePath) {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, meta) => {
+      if (err || !meta?.format?.duration) return resolve(null)
+      resolve(parseFloat(meta.format.duration))
+    })
+  })
+}
+
 // Detect a usable font file for drawtext filter.
 function detectFont() {
   const candidates = [
@@ -230,9 +240,10 @@ app.post('/composite', async (req, res) => {
         .outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
     })
 
+    const clipDuration = await probeFileDuration(videoOut)
     const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
-    slog('composite', 'Done', { outputUrl })
-    res.json({ outputUrl })
+    slog('composite', 'Done', { outputUrl, clipDuration })
+    res.json({ outputUrl, clipDuration })
   } catch (err) {
     slog('composite', 'Error', { error: err.message })
     res.status(500).json({ error: err.message })

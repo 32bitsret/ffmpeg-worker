@@ -246,19 +246,26 @@ function buildMusicVolumeFilter(timeline, fallbackVolume) {
 
   let t = 0
   const mutedRanges = []
-  for (const seg of timeline) {
+  for (let i = 0; i < timeline.length; i++) {
+    const seg = timeline[i]
     const start = t
     const end = t + (seg.duration || 5)
     if (seg.volume === 0) {
-      mutedRanges.push([start, end])
+      // If no subsequent segment has audible music, use gte(t,start) instead of
+      // between(t,start,end) so duration drift between DB values and actual encoded
+      // clip lengths can't cause music to bleed back in at the tail.
+      const isTrailingMute = !timeline.slice(i + 1).some(s => s.volume > 0)
+      mutedRanges.push(isTrailingMute ? [start, null] : [start, end])
     }
     t = end
   }
 
   if (!mutedRanges.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
 
-  const mutedExpr = mutedRanges.map(([s, e]) => `between(t,${s},${e})`).join('+')
   const targetVol = (fallbackVolume * 2).toFixed(3)
+  const mutedExpr = mutedRanges.map(([s, e]) =>
+    e === null ? `gte(t,${s})` : `between(t,${s},${e})`
+  ).join('+')
   return `volume='if(${mutedExpr},0,${targetVol})'`
 }
 

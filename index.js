@@ -210,7 +210,7 @@ app.post('/composite', async (req, res) => {
       if (textFilter) videoFilters.push(textFilter)
 
       if (FONT_PATH && watermark === true) {
-        videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=22:fontcolor=white@0.5:x=20:y=20`)
+        videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
       }
 
       if (isTemplate) {
@@ -255,29 +255,28 @@ app.post('/composite', async (req, res) => {
 function buildMusicVolumeFilter(timeline, fallbackVolume) {
   if (!timeline?.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
 
-  let t = 0
-  const mutedRanges = []
-  for (let i = 0; i < timeline.length; i++) {
-    const seg = timeline[i]
-    const start = t
-    const end = t + (seg.duration || 5)
-    if (seg.volume === 0) {
-      // If no subsequent segment has audible music, use gte(t,start) instead of
-      // between(t,start,end) so duration drift between DB values and actual encoded
-      // clip lengths can't cause music to bleed back in at the tail.
-      const isTrailingMute = !timeline.slice(i + 1).some(s => s.volume > 0)
-      mutedRanges.push(isTrailingMute ? [start, null] : [start, end])
-    }
-    t = end
+  // Check if all segments share the same volume — use a simple filter
+  const allSameVolume = timeline.every(s => (s.volume ?? fallbackVolume) === (timeline[0].volume ?? fallbackVolume))
+  if (allSameVolume) {
+    const v = timeline[0].volume ?? fallbackVolume
+    return `volume=${(v * 2).toFixed(3)}`
   }
 
-  if (!mutedRanges.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
+  // Build a piecewise volume expression using nested if(lt(t,cutoff),vol,...) per segment
+  let t = 0
+  const segments = timeline.map((seg) => {
+    const start = t
+    t += seg.duration || 5
+    return { start, end: t, volume: seg.volume ?? fallbackVolume }
+  })
 
-  const targetVol = (fallbackVolume * 2).toFixed(3)
-  const mutedExpr = mutedRanges.map(([s, e]) =>
-    e === null ? `gte(t,${s})` : `between(t,${s},${e})`
-  ).join('+')
-  return `volume='if(${mutedExpr},0,${targetVol})'`
+  // Build from the last segment backwards: if(lt(t,end_i), vol_i, <rest>)
+  let expr = (segments[segments.length - 1].volume * 2).toFixed(3)
+  for (let i = segments.length - 2; i >= 0; i--) {
+    const vol = (segments[i].volume * 2).toFixed(3)
+    expr = `if(lt(t,${segments[i].end}),${vol},${expr})`
+  }
+  return `volume='${expr}'`
 }
 
 app.post('/render', async (req, res) => {

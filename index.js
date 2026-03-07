@@ -188,6 +188,19 @@ app.post('/composite', async (req, res) => {
     else if (imageIn && !imageUrl) return res.status(400).json({ error: 'backgroundType=image requires imageUrl' })
     if (audioIn) await download(voiceoverUrl, audioIn)
 
+    // Probe audio duration — if it exceeds the scene length, apply atempo to
+    // speed it up so no words get cut by the video's -shortest trim.
+    let audioTempoFilter = null
+    if (audioIn) {
+      const audioDuration = await probeFileDuration(audioIn)
+      const sceneDuration = duration || 10
+      if (audioDuration && audioDuration > sceneDuration + 0.15) {
+        const rate = Math.min(audioDuration / sceneDuration, 2.0).toFixed(3)
+        audioTempoFilter = `atempo=${rate}`
+        slog('composite', `Audio overrun — applying ${audioTempoFilter}`, { audioDuration, sceneDuration })
+      }
+    }
+
     await new Promise((resolve, reject) => {
       let cmd
       if (backgroundType === 'image') {
@@ -219,31 +232,40 @@ app.post('/composite', async (req, res) => {
         videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
       }
 
+      // Build audio chain label — apply atempo to speed up audio if it overruns the scene
+      const audioMap = audioTempoFilter ? '[aout]' : '1:a:0'
+
       if (isTemplate) {
-        const chain = videoFilters.length
+        const videoChain = videoFilters.length
           ? `[0:v]format=yuv420p,${videoFilters.join(',')}[vout]`
           : `[0:v]format=yuv420p[vout]`
-        cmd = cmd.complexFilter([chain])
+        const chains = [videoChain]
+        if (audioTempoFilter) chains.push(`[1:a]${audioTempoFilter}[aout]`)
+        cmd = cmd.complexFilter(chains)
         const outputOpts = [
           '-map', '[vout]',
-          '-map', '1:a:0',
+          '-map', audioMap,
           '-c:v', 'libx264', '-c:a', 'aac',
           '-preset', 'fast', '-crf', '23', '-movflags', '+faststart',
           '-threads', '4'
         ]
         if (audioIn) outputOpts.push('-shortest')
         else outputOpts.push('-t', String(duration || 10))
-        // Note: 1:a:0 always exists — either voiceover or anullsrc silent track
         cmd.outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
         return
       }
 
-      if (videoFilters.length) cmd = cmd.videoFilters(videoFilters)
       const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart', '-threads 4']
-      if (audioIn) {
-        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
+      if (audioTempoFilter) {
+        // Need complexFilter to apply atempo — combine any video filters too
+        const videoChain = videoFilters.length
+          ? `[0:v]${videoFilters.join(',')}[vout]`
+          : `[0:v]copy[vout]`
+        cmd = cmd.complexFilter([videoChain, `[1:a]${audioTempoFilter}[aout]`])
+        outputOpts.push('-map', '[vout]', '-map', '[aout]', audioIn ? '-shortest' : `-t ${duration || 10}`)
       } else {
-        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', `-t ${duration || 10}`)
+        if (videoFilters.length) cmd = cmd.videoFilters(videoFilters)
+        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', audioIn ? '-shortest' : `-t ${duration || 10}`)
       }
 
       cmd.videoCodec('libx264').audioCodec('aac').audioBitrate('128k')

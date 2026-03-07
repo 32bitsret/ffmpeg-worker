@@ -197,7 +197,13 @@ app.post('/composite', async (req, res) => {
         cmd = ffmpeg(videoIn)
       }
 
-      if (audioIn) cmd = cmd.input(audioIn)
+      if (audioIn) {
+        cmd = cmd.input(audioIn)
+      } else {
+        // No voiceover — add a silent audio source so every clip has a consistent
+        // audio stream for the final concat + amix step in /render
+        cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration || 10}`])
+      }
 
       const videoFilters = []
       if (backgroundType === 'image') {
@@ -220,21 +226,25 @@ app.post('/composite', async (req, res) => {
         cmd = cmd.complexFilter([chain])
         const outputOpts = [
           '-map', '[vout]',
-          '-map', audioIn ? '1:a:0' : '0:a?',
+          '-map', '1:a:0',
           '-c:v', 'libx264', '-c:a', 'aac',
           '-preset', 'fast', '-crf', '23', '-movflags', '+faststart',
           '-threads', '4'
         ]
         if (audioIn) outputOpts.push('-shortest')
         else outputOpts.push('-t', String(duration || 10))
+        // Note: 1:a:0 always exists — either voiceover or anullsrc silent track
         cmd.outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
         return
       }
 
       if (videoFilters.length) cmd = cmd.videoFilters(videoFilters)
       const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart', '-threads 4']
-      if (audioIn) outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
-      else outputOpts.push(`-t ${duration || 10}`)
+      if (audioIn) {
+        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', '-shortest')
+      } else {
+        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', `-t ${duration || 10}`)
+      }
 
       cmd.videoCodec('libx264').audioCodec('aac').audioBitrate('128k')
         .outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()

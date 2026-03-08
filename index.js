@@ -1,3 +1,4 @@
+require('dotenv').config()
 const express = require('express')
 const ffmpeg = require('fluent-ffmpeg')
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
@@ -396,6 +397,9 @@ app.post('/composite', async (req, res) => {
         else cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration || 10}`])
 
         const videoFilters = []
+        // Always force portrait 9:16 output regardless of source dimensions.
+        // Veo and other text-to-video models may generate landscape clips.
+        if (videoIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
         if (imageIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
         
         const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark

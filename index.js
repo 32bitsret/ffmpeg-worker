@@ -350,7 +350,7 @@ app.post('/composite', async (req, res) => {
           // Single slide — no xfade needed, stream-copy video
           cmd.outputOptions([
             '-map 0:v:0', `-map ${audioIdx}:a:0`,
-            '-c:v copy', '-c:a aac',
+            '-c:v copy', '-c:a aac', '-ar 44100', '-ac 2',
             audioIn ? '-shortest' : `-t ${clipDurations[0].toFixed(3)}`,
             '-movflags +faststart',
           ])
@@ -372,7 +372,7 @@ app.post('/composite', async (req, res) => {
           cmd.complexFilter(complexFilters)
             .outputOptions([
               '-map [vout]', `-map ${audioIdx}:a:0`,
-              '-c:v libx264', '-c:a aac',
+              '-c:v libx264', '-c:a aac', '-ar 44100', '-ac 2',
               '-preset fast', '-crf 23', '-pix_fmt yuv420p',
               '-movflags +faststart',
               audioIn ? '-shortest' : `-t ${totalVideoDur.toFixed(3)}`,
@@ -412,7 +412,7 @@ app.post('/composite', async (req, res) => {
         }
 
         cmd.videoFilters(videoFilters)
-          .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', audioIn ? '-shortest' : `-t ${duration || 10}`])
+          .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-ar 44100', '-ac 2', audioIn ? '-shortest' : `-t ${duration || 10}`])
           .videoCodec('libx264').audioCodec('aac')
           .output(videoOut)
           .on('end', resolve).on('error', reject).run()
@@ -470,8 +470,8 @@ app.post('/render', async (req, res) => {
         const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
         cmd = cmd.complexFilter([
-          `[0:a]apad,volume=2.0[voice_padded]`,
-          `[1:a]${musicVolumeFilter}[music]`,
+          `[0:a]aresample=44100,aformat=channel_layouts=stereo,apad,volume=2.0[voice_padded]`,
+          `[1:a]aresample=44100,aformat=channel_layouts=stereo,${musicVolumeFilter}[music]`,
           `[voice_padded][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]', '-c:v libx264', '-c:a aac',

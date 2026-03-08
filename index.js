@@ -35,8 +35,20 @@ function fcFind(family, style) {
 }
 
 // Detect usable font files for drawtext filter.
-// Tries fontconfig first (works on Nix/Railway), then falls back to hardcoded apt paths.
+// Priority: 1) bundled fonts (./fonts/) → 2) fontconfig (Nix/Railway) → 3) hardcoded apt paths
 function detectFonts() {
+  const fontsDir = path.join(__dirname, 'fonts')
+
+  // Bundled fonts — shipped with the worker, always consistent across environments
+  const bundled = {
+    bold:    path.join(fontsDir, 'BebasNeue-Regular.ttf'),   // Bebas Neue — the go-to reels headline font
+    elegant: path.join(fontsDir, 'PlayfairDisplay-Regular.ttf'), // Playfair Display — premium serif
+    modern:  path.join(fontsDir, 'Montserrat-Bold.ttf'),     // Montserrat Bold — clean, app/tech content
+    minimal: path.join(fontsDir, 'WorkSans-Light.ttf'),      // Work Sans Light — airy, minimal
+    kinetic: path.join(fontsDir, 'Anton-Regular.ttf'),        // Anton — strong contrast, high energy
+  }
+
+  // Fontconfig lookup (Nix/Railway system fonts) — used only if bundled font missing
   const fcTargets = {
     bold:    () => fcFind('FreeSans', 'Bold'),
     elegant: () => fcFind('Liberation Serif', 'Regular'),
@@ -56,8 +68,11 @@ function detectFonts() {
   const found = {}
   let fallback = null
 
-  for (const [key, lookup] of Object.entries(fcTargets)) {
-    const f = lookup() || (fs.existsSync(aptPaths[key]) ? aptPaths[key] : null)
+  for (const key of Object.keys(bundled)) {
+    const bundledPath = bundled[key]
+    const f = fs.existsSync(bundledPath)
+      ? bundledPath
+      : (fcTargets[key]() || (fs.existsSync(aptPaths[key]) ? aptPaths[key] : null))
     if (f) {
       found[key] = f
       if (!fallback) fallback = f

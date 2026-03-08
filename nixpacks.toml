@@ -1,4 +1,5 @@
 [phases.setup]
+# freefont_ttf, liberation_ttf, dejavu_fonts kept as fallbacks — bundled fonts in ./fonts/ take priority
 nixPkgs = ["nodejs_20", "ffmpeg", "freefont_ttf", "liberation_ttf", "dejavu_fonts", "fontconfig"]
 
 [phases.install]

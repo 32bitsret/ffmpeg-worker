@@ -21,35 +21,58 @@ function probeFileDuration(filePath) {
   })
 }
 
-// Detect a usable font file for drawtext filter.
-function detectFont() {
-  const candidates = [
-    '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/usr/share/fonts/TTF/DejaVuSans.ttf',
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  ]
-  for (const f of candidates) {
-    if (fs.existsSync(f)) return f
+// Query fontconfig for a font file by family + style.
+// Works in Nix environments where fonts live in hashed /nix/store/... paths.
+function fcFind(family, style) {
+  try {
+    const query = style ? `:family="${family}":style="${style}"` : `:family="${family}"`
+    const out = execSync(`fc-list --format="%{file}\\n" ${query} 2>/dev/null`, { encoding: 'utf8' })
+    const file = out.trim().split('\n').find(f => f && fs.existsSync(f))
+    return file || null
+  } catch {
+    return null
   }
-  try {
-    const nixFont = execSync('find /nix/store -name "FreeSans.ttf" 2>/dev/null | head -1', { timeout: 5000 })
-      .toString().trim()
-    if (nixFont && fs.existsSync(nixFont)) return nixFont
-  } catch {}
-  try {
-    const fcMatch = execSync('fc-match -f "%{file}" :spacing=proportional:fontformat=TrueType 2>/dev/null', { timeout: 3000 })
-      .toString().trim()
-    if (fcMatch && fs.existsSync(fcMatch)) return fcMatch
-  } catch {}
-  return null
 }
 
-const FONT_PATH = detectFont()
-console.log(JSON.stringify({ ts: new Date().toISOString(), msg: `Font: ${FONT_PATH || 'none — drawtext disabled'}` }))
+// Detect usable font files for drawtext filter.
+// Tries fontconfig first (works on Nix/Railway), then falls back to hardcoded apt paths.
+function detectFonts() {
+  const fcTargets = {
+    bold:    () => fcFind('FreeSans', 'Bold'),
+    elegant: () => fcFind('Liberation Serif', 'Regular'),
+    modern:  () => fcFind('DejaVu Sans', 'Book') || fcFind('DejaVu Sans', 'Regular'),
+    minimal: () => fcFind('FreeSans', 'Regular'),
+    kinetic: () => fcFind('Liberation Sans', 'Bold'),
+  }
+  // Hardcoded apt paths as a last resort for non-Nix environments
+  const aptPaths = {
+    bold:    '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+    elegant: '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+    modern:  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    minimal: '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+    kinetic: '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+  }
+
+  const found = {}
+  let fallback = null
+
+  for (const [key, lookup] of Object.entries(fcTargets)) {
+    const f = lookup() || (fs.existsSync(aptPaths[key]) ? aptPaths[key] : null)
+    if (f) {
+      found[key] = f
+      if (!fallback) fallback = f
+    }
+  }
+
+  return { ...found, fallback }
+}
+
+const FONTS = detectFonts()
+const FONT_PATH = FONTS.fallback
+console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'Fonts detected', fonts: FONTS }))
 
 const app = express()
-app.use(express.json())
+app.use(express.json({ limit: '50mb' }))
 
 const r2 = new S3Client({
   region: 'auto',
@@ -126,6 +149,7 @@ function escapeDrawtext(text) {
 }
 
 function isLightColor(hex) {
+  if (!hex) return false
   const clean = hex.replace(/^#|^0x/i, '')
   if (clean.length !== 6) return false
   const r = parseInt(clean.slice(0, 2), 16)
@@ -134,143 +158,247 @@ function isLightColor(hex) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 128
 }
 
-function buildTextFilter(fontPath, text, isTemplate, bgIsLight) {
-  if (!fontPath || !text?.trim()) return null
+function buildRichTextFilter(text, vibe = 'bold', isTemplate = true, bgIsLight = false, fadeIn = false) {
+  if (!text?.trim()) return null
+  const fontPath = FONTS[vibe] || FONTS.fallback
+  if (!fontPath) return null
+
   const len = text.trim().length
   let fontSize, maxChars
+
   if (isTemplate) {
-    if      (len <= 10) { fontSize = 90; maxChars = 10 }
-    else if (len <= 16) { fontSize = 80; maxChars = 16 }
-    else if (len <= 24) { fontSize = 68; maxChars = 20 }
-    else                { fontSize = 56; maxChars = 24 }
+    if      (len <= 12) { fontSize = 100; maxChars = 10 }
+    else if (len <= 20) { fontSize = 80;  maxChars = 14 }
+    else if (len <= 35) { fontSize = 64;  maxChars = 18 }
+    else                { fontSize = 52;  maxChars = 22 }
   } else {
     fontSize = 48
     maxChars = 24
   }
-  const wrapped  = wrapText(text.trim(), maxChars)
-  const escaped  = escapeDrawtext(wrapped)
-  const fontColor   = (isTemplate && bgIsLight) ? 'black' : 'white'
-  const borderColor = (isTemplate && bgIsLight) ? 'white@0.5' : 'black@0.7'
-  if (isTemplate) {
-    return (
-      `drawtext=fontfile='${fontPath}':text='${escaped}':fontsize=${fontSize}` +
-      `:fontcolor=${fontColor}:x=(w-text_w)/2:y=(h-text_h)/2` +
-      `:borderw=4:bordercolor=${borderColor}:shadowx=2:shadowy=2:line_spacing=12`
-    )
-  } else {
-    return (
-      `drawtext=fontfile='${fontPath}':text='${escaped}':fontsize=${fontSize}` +
-      `:fontcolor=white:x=(w-text_w)/2:y=h-140` +
-      `:borderw=3:bordercolor=black:shadowx=2:shadowy=2:line_spacing=8`
-    )
+
+  const wrapped = wrapText(text.trim(), maxChars)
+  const escaped = escapeDrawtext(wrapped)
+
+  let fontColor = bgIsLight ? 'black' : 'white'
+  let borderColor = bgIsLight ? 'white@0.4' : 'black@0.6'
+  let borderW = 3
+  let shadowX = 2, shadowY = 2
+
+  if (vibe === 'kinetic') {
+    fontColor = 'white'
+    borderColor = '0x7c3aed@0.8'
+    borderW = 5
+  } else if (vibe === 'bold') {
+    borderW = 4
+    shadowX = 4; shadowY = 4
+  } else if (vibe === 'elegant') {
+    fontSize = Math.round(fontSize * 0.9)
   }
+
+  const x = '(w-text_w)/2'
+  // kinetic: text slides up into center over 0.25s; all others: vertically centered
+  const y = !isTemplate
+    ? 'h-160'
+    : (fadeIn && vibe === 'kinetic')
+      ? '(h-text_h)/2+max(0\\,(0.25-t)/0.25*60)'
+      : '(h-text_h)/2'
+
+  // Fade-in alpha: ramp from 0→1 over 0.25s
+  const alpha = fadeIn ? 'min(t/0.25\\,1)' : null
+
+  return `drawtext=fontfile='${fontPath}':text='${escaped}':fontsize=${fontSize}` +
+         `:fontcolor=${fontColor}:x=${x}:y=${y}` +
+         `:borderw=${borderW}:bordercolor=${borderColor}:shadowx=${shadowX}:shadowy=${shadowY}:line_spacing=15` +
+         (alpha ? `:alpha='${alpha}'` : '')
 }
 
 const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
+
+/**
+ * Creates a video clip for a single slide.
+ */
+// Ken Burns effect variants — rotate through zoom-in, zoom-out, and pan-right
+function kenBurnsFilter(idx, frames) {
+  const effect = idx % 3
+  if (effect === 0) {
+    // Zoom in toward center
+    return `scale=2000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=${frames}:s=1080x1920:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`
+  } else if (effect === 1) {
+    // Zoom out from center — initialise zoom to 1.5 on frame 1 then decrement
+    return `scale=2000:-1,zoompan=z='if(eq(on\\,1)\\,1.5\\,max(zoom-0.0015\\,1.0))':d=${frames}:s=1080x1920:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`
+  } else {
+    // Slow pan right with gentle zoom
+    return `scale=2000:-1,zoompan=z='min(zoom+0.0008,1.2)':d=${frames}:s=1080x1920:x='iw/2-(iw/zoom/2)+iw*0.04*on/${frames}':y='ih/2-(ih/zoom/2)'`
+  }
+}
+
+async function createSlideClip(slide, canvasColor, idx, watermark = false) {
+  const outFile = tmpFile('.mp4')
+  const duration = slide.duration || 2.5
+  const frames = Math.round(duration * 25)
+
+  return new Promise(async (resolve, reject) => {
+    let cmd = ffmpeg()
+    const filters = []
+
+    // 1. Setup background
+    if (slide.type === 'image') {
+      const imgPath = tmpFile('.png')
+      await download(slide.content, imgPath)
+      // Explicit -r 25 so zoompan's frame-count (d=frames) is accurate
+      cmd = cmd.input(imgPath).inputOptions(['-loop 1', '-r 25'])
+      filters.push(kenBurnsFilter(idx, frames))
+    } else {
+      // Text slide: solid color background
+      const color = slide.backgroundColor || canvasColor || '#111111'
+      const hex = color.replace('#', '0x')
+      cmd = cmd.input(`color=c=${hex}:s=1080x1920:d=${duration}`).inputOptions(['-f lavfi'])
+    }
+
+    // 2. Text with fade-in (text slides only)
+    const bgIsLight = isLightColor(slide.backgroundColor || canvasColor)
+    const textFilter = buildRichTextFilter(
+      slide.type === 'text' ? slide.content : '',
+      slide.fontVibe || 'bold',
+      true,
+      bgIsLight,
+      true  // fadeIn — always animate text in for slideshow slides
+    )
+    if (textFilter) filters.push(textFilter)
+
+    // 3. Watermark
+    if (watermark && FONT_PATH) {
+      filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+    }
+
+    // 4. Apply filters only if non-empty (empty videoFilters([]) emits -vf "" which FFmpeg rejects)
+    if (filters.length > 0) cmd = cmd.videoFilters(filters)
+
+    cmd.outputOptions(['-t', duration.toString(), '-pix_fmt yuv420p', '-r 25'])
+      .videoCodec('libx264')
+      .output(outFile)
+      .on('end', () => resolve({ path: outFile, duration }))
+      .on('error', (err) => reject(err))
+      .run()
+  })
+}
 
 app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
     backgroundType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
+    fontVibe = 'bold', slides = []
   } = req.body
+  
   slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl })
 
-  const isTemplate = backgroundType === 'canvas'
-  // NEW: canvas now behaves like cinematic (uses video input)
-  const videoIn = (backgroundType === 'cinematic' || backgroundType === 'video' || backgroundType === 'canvas') ? tmpFile('.mp4') : null
-  const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
-  const audioIn = voiceoverUrl ? tmpFile('.mp3') : null
+  const tempFiles = []
   const videoOut = tmpFile('.mp4')
+  const audioIn = voiceoverUrl ? tmpFile('.mp3') : null
 
   try {
-    if (videoIn) await download(visualClipUrl, videoIn)
-    if (imageIn && imageUrl) await download(imageUrl, imageIn)
-    else if (imageIn && !imageUrl) return res.status(400).json({ error: 'backgroundType=image requires imageUrl' })
     if (audioIn) await download(voiceoverUrl, audioIn)
 
-    // Probe audio duration — if it exceeds the scene length, apply atempo to
-    // speed it up so no words get cut by the video's -shortest trim.
-    let audioTempoFilter = null
-    if (audioIn) {
-      const audioDuration = await probeFileDuration(audioIn)
-      const sceneDuration = duration || 10
-      if (audioDuration && audioDuration > sceneDuration + 0.15) {
-        const rate = Math.min(audioDuration / sceneDuration, 2.0).toFixed(3)
-        audioTempoFilter = `atempo=${rate}`
-        slog('composite', `Audio overrun — applying ${audioTempoFilter}`, { audioDuration, sceneDuration })
+    if (backgroundType === 'slideshow') {
+      // ── Slideshow Logic ────────────────────────────────────────────────────
+      const slideClips = []
+      const clipDurations = []
+      for (let i = 0; i < slides.length; i++) {
+        const clip = await createSlideClip(slides[i], canvasColor, i, watermark === true)
+        slideClips.push(clip.path)
+        clipDurations.push(clip.duration)
+        tempFiles.push(clip.path)
       }
+
+      if (slideClips.length === 0) throw new Error('No slide clips produced')
+
+      const XFADE_DUR = 0.4
+      // Varied transitions — rotate through the list per slide boundary
+      const XFADE_TRANSITIONS = ['fade', 'wipeleft', 'wiperight', 'slideleft', 'slideright', 'dissolve', 'fadeblack']
+      // Total video duration accounting for overlapping transitions
+      const totalVideoDur = clipDurations.reduce((a, b) => a + b, 0) - (slideClips.length - 1) * XFADE_DUR
+
+      await new Promise((resolve, reject) => {
+        let cmd = ffmpeg()
+        // Input each slide clip individually (xfade requires separate inputs, not concat demuxer)
+        for (const clipPath of slideClips) cmd = cmd.input(clipPath)
+
+        const audioIdx = slideClips.length
+        if (audioIn) {
+          cmd = cmd.input(audioIn)
+        } else {
+          cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${totalVideoDur.toFixed(3)}`])
+        }
+
+        if (slideClips.length === 1) {
+          // Single slide — no xfade needed, stream-copy video
+          cmd.outputOptions([
+            '-map 0:v:0', `-map ${audioIdx}:a:0`,
+            '-c:v copy', '-c:a aac',
+            audioIn ? '-shortest' : `-t ${clipDurations[0].toFixed(3)}`,
+            '-movflags +faststart',
+          ])
+        } else {
+          // Build xfade filter chain
+          // offset_i = sum(durations[0..i]) - (i+1)*XFADE_DUR
+          const complexFilters = []
+          let prevLabel = '[0:v]'
+          let cumulativeDur = 0
+          for (let i = 0; i < slideClips.length - 1; i++) {
+            cumulativeDur += clipDurations[i]
+            const offset = Math.max(0.1, cumulativeDur - XFADE_DUR * (i + 1))
+            const transition = XFADE_TRANSITIONS[i % XFADE_TRANSITIONS.length]
+            const outLabel = i === slideClips.length - 2 ? '[vout]' : `[v${i}]`
+            complexFilters.push(`${prevLabel}[${i + 1}:v]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
+            prevLabel = outLabel
+          }
+
+          cmd.complexFilter(complexFilters)
+            .outputOptions([
+              '-map [vout]', `-map ${audioIdx}:a:0`,
+              '-c:v libx264', '-c:a aac',
+              '-preset fast', '-crf 23', '-pix_fmt yuv420p',
+              '-movflags +faststart',
+              audioIn ? '-shortest' : `-t ${totalVideoDur.toFixed(3)}`,
+            ])
+        }
+
+        cmd.output(videoOut)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+    } else {
+      // ── Standard Logic (Cinematic, Canvas, Video) ──────────────────────────
+      const videoIn = (backgroundType === 'cinematic' || backgroundType === 'video' || backgroundType === 'canvas') ? tmpFile('.mp4') : null
+      const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
+      if (videoIn) { await download(visualClipUrl, videoIn); tempFiles.push(videoIn) }
+      if (imageIn && imageUrl) { await download(imageUrl, imageIn); tempFiles.push(imageIn) }
+
+      await new Promise((resolve, reject) => {
+        let cmd = imageIn ? ffmpeg().input(imageIn).inputOptions(['-loop 1']) : ffmpeg(videoIn)
+        if (audioIn) cmd = cmd.input(audioIn)
+        else cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration || 10}`])
+
+        const videoFilters = []
+        if (imageIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+        
+        const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+        const bgIsLight = (backgroundType === 'canvas') ? isLightColor(effectiveHex) : false
+        const textFilter = buildRichTextFilter(onScreenText, fontVibe, backgroundType === 'canvas', bgIsLight)
+        if (textFilter) videoFilters.push(textFilter)
+
+        if (FONT_PATH && watermark === true) {
+          videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+        }
+
+        cmd.videoFilters(videoFilters)
+          .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', audioIn ? '-shortest' : `-t ${duration || 10}`])
+          .videoCodec('libx264').audioCodec('aac')
+          .output(videoOut)
+          .on('end', resolve).on('error', reject).run()
+      })
     }
-
-    await new Promise((resolve, reject) => {
-      let cmd
-      if (backgroundType === 'image') {
-        cmd = ffmpeg().input(imageIn).inputOptions(['-loop 1'])
-      } else {
-        // Covers 'video' and 'canvas'
-        cmd = ffmpeg(videoIn)
-      }
-
-      if (audioIn) {
-        cmd = cmd.input(audioIn)
-      } else {
-        // No voiceover — add a silent audio source so every clip has a consistent
-        // audio stream for the final concat + amix step in /render
-        cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration || 10}`])
-      }
-
-      const videoFilters = []
-      if (backgroundType === 'image') {
-        videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
-      }
-
-      const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
-      const bgIsLight = isTemplate ? isLightColor(effectiveHex) : false
-      const textFilter = buildTextFilter(FONT_PATH, onScreenText, isTemplate, bgIsLight)
-      if (textFilter) videoFilters.push(textFilter)
-
-      if (FONT_PATH && watermark === true) {
-        videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
-      }
-
-      // Build audio chain label — apply atempo to speed up audio if it overruns the scene
-      const audioMap = audioTempoFilter ? '[aout]' : '1:a:0'
-
-      if (isTemplate) {
-        const videoChain = videoFilters.length
-          ? `[0:v]format=yuv420p,${videoFilters.join(',')}[vout]`
-          : `[0:v]format=yuv420p[vout]`
-        const chains = [videoChain]
-        if (audioTempoFilter) chains.push(`[1:a]${audioTempoFilter}[aout]`)
-        cmd = cmd.complexFilter(chains)
-        const outputOpts = [
-          '-map', '[vout]',
-          '-map', audioMap,
-          '-c:v', 'libx264', '-c:a', 'aac',
-          '-preset', 'fast', '-crf', '23', '-movflags', '+faststart',
-          '-threads', '4'
-        ]
-        if (audioIn) outputOpts.push('-shortest')
-        else outputOpts.push('-t', String(duration || 10))
-        cmd.outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
-        return
-      }
-
-      const outputOpts = ['-preset fast', '-crf 23', '-movflags +faststart', '-threads 4']
-      if (audioTempoFilter) {
-        // Need complexFilter to apply atempo — combine any video filters too
-        const videoChain = videoFilters.length
-          ? `[0:v]${videoFilters.join(',')}[vout]`
-          : `[0:v]copy[vout]`
-        cmd = cmd.complexFilter([videoChain, `[1:a]${audioTempoFilter}[aout]`])
-        outputOpts.push('-map', '[vout]', '-map', '[aout]', audioIn ? '-shortest' : `-t ${duration || 10}`)
-      } else {
-        if (videoFilters.length) cmd = cmd.videoFilters(videoFilters)
-        outputOpts.push('-map', '0:v:0', '-map', '1:a:0', audioIn ? '-shortest' : `-t ${duration || 10}`)
-      }
-
-      cmd.videoCodec('libx264').audioCodec('aac').audioBitrate('128k')
-        .outputOptions(outputOpts).output(videoOut).on('end', resolve).on('error', reject).run()
-    })
 
     const clipDuration = await probeFileDuration(videoOut)
     const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
@@ -280,33 +408,23 @@ app.post('/composite', async (req, res) => {
     slog('composite', 'Error', { error: err.message })
     res.status(500).json({ error: err.message })
   } finally {
-    cleanup(videoIn, imageIn, audioIn, videoOut)
+    cleanup(...tempFiles, audioIn, videoOut)
   }
 })
 
 function buildMusicVolumeFilter(timeline, fallbackVolume) {
   if (!timeline?.length) return `volume=${(fallbackVolume * 2).toFixed(3)}`
-
-  // Check if all segments share the same volume — use a simple filter
   const allSameVolume = timeline.every(s => (s.volume ?? fallbackVolume) === (timeline[0].volume ?? fallbackVolume))
-  if (allSameVolume) {
-    const v = timeline[0].volume ?? fallbackVolume
-    return `volume=${(v * 2).toFixed(3)}`
-  }
-
-  // Build a piecewise volume expression using nested if(lt(t,cutoff),vol,...) per segment
+  if (allSameVolume) return `volume=${((timeline[0].volume ?? fallbackVolume) * 2).toFixed(3)}`
   let t = 0
   const segments = timeline.map((seg) => {
     const start = t
     t += seg.duration || 5
     return { start, end: t, volume: seg.volume ?? fallbackVolume }
   })
-
-  // Build from the last segment backwards: if(lt(t,end_i), vol_i, <rest>)
   let expr = (segments[segments.length - 1].volume * 2).toFixed(3)
   for (let i = segments.length - 2; i >= 0; i--) {
-    const vol = (segments[i].volume * 2).toFixed(3)
-    expr = `if(lt(t,${segments[i].end}),${vol},${expr})`
+    expr = `if(lt(t,${segments[i].end}),${(segments[i].volume * 2).toFixed(3)},${expr})`
   }
   return `volume='${expr}'`
 }
@@ -326,8 +444,7 @@ app.post('/render', async (req, res) => {
       clipFiles.push(f)
     }
     if (musicFile) await download(backgroundMusicUrl, musicFile)
-    const listContent = clipFiles.map(f => `file '${f}'`).join('\n')
-    fs.writeFileSync(listFile, listContent)
+    fs.writeFileSync(listFile, clipFiles.map(f => `file '${f}'`).join('\n'))
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
       if (musicFile) {

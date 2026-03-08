@@ -212,7 +212,7 @@ function buildRichTextFilter(text, vibe = 'bold', isTemplate = true, bgIsLight =
          (alpha ? `:alpha='${alpha}'` : '')
 }
 
-const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x111111', muted: '0x1a1a2e' }
+const CANVAS_COLORS = { white: '0xf5f5f5', dark: '0x9687FF', muted: '0xE66FFF' }
 
 /**
  * Creates a video clip for a single slide.
@@ -250,7 +250,7 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false) {
       filters.push(kenBurnsFilter(idx, frames))
     } else {
       // Text slide: solid color background
-      const color = slide.backgroundColor || canvasColor || '#111111'
+      const color = slide.backgroundColor || canvasColor || '#9687FF'
       const hex = color.replace('#', '0x')
       cmd = cmd.input(`color=c=${hex}:s=1080x1920:d=${duration}`).inputOptions(['-f lavfi'])
     }

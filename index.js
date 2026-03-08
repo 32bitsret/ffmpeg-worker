@@ -359,7 +359,7 @@ app.post('/composite', async (req, res) => {
         } else {
           // Build xfade filter chain
           // offset_i = sum(durations[0..i]) - (i+1)*XFADE_DUR
-          const complexFilters = []
+          const filterParts = []
           let prevLabel = '[0:v]'
           let cumulativeDur = 0
           for (let i = 0; i < slideClips.length - 1; i++) {
@@ -367,23 +367,32 @@ app.post('/composite', async (req, res) => {
             const offset = Math.max(0.1, cumulativeDur - XFADE_DUR * (i + 1))
             const transition = XFADE_TRANSITIONS[i % XFADE_TRANSITIONS.length]
             const outLabel = i === slideClips.length - 2 ? '[vout]' : `[v${i}]`
-            complexFilters.push(`${prevLabel}[${i + 1}:v]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
+            filterParts.push(`${prevLabel}[${i + 1}:v]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
             prevLabel = outLabel
           }
+          const filterComplex = filterParts.join(';')
+          slog('xfade', 'filter_complex', { filterComplex, clips: slideClips.length, durations: clipDurations })
 
-          cmd.complexFilter(complexFilters)
-            .outputOptions([
-              '-map [vout]', `-map ${audioIdx}:a:0`,
-              '-c:v libx264', '-c:a aac', '-ar 44100', '-ac 2',
-              '-preset fast', '-crf 23', '-pix_fmt yuv420p',
-              '-movflags +faststart',
-              audioIn ? '-shortest' : `-t ${totalVideoDur.toFixed(3)}`,
-            ])
+          // Pass filter_complex as raw output option to bypass any fluent-ffmpeg
+          // filter-string processing that could corrupt stream labels.
+          cmd.outputOptions([
+            '-filter_complex', filterComplex,
+            '-map', '[vout]',
+            '-map', `${audioIdx}:a:0`,
+            '-c:v', 'libx264', '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+            '-preset', 'fast', '-crf', '23', '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            ...(audioIn ? ['-shortest'] : ['-t', totalVideoDur.toFixed(3)]),
+          ])
         }
 
         cmd.output(videoOut)
+          .on('start', (cmdLine) => slog('ffmpeg-cmd', 'slideshow xfade cmd', { cmdLine }))
           .on('end', resolve)
-          .on('error', reject)
+          .on('error', (err, stdout, stderr) => {
+            slog('ffmpeg-err', 'slideshow xfade failed', { error: err.message, stderr: stderr?.slice(-1000) })
+            reject(err)
+          })
           .run()
       })
     } else {

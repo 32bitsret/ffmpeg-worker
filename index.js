@@ -265,10 +265,12 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false) {
       cmd = cmd.input(imgPath).inputOptions(['-loop 1', '-r 25'])
       filters.push(kenBurnsFilter(idx, frames))
     } else {
-      // Text slide: solid color background
+      // Text/color slide: solid color background
+      // Add 1s buffer so the clip is always longer than (duration), ensuring xfade
+      // transitions never overshoot the clip boundary at 25fps frame boundaries.
       const color = slide.backgroundColor || canvasColor || '#9687FF'
       const hex = color.replace('#', '0x')
-      cmd = cmd.input(`color=c=${hex}:s=1080x1920:d=${duration}`).inputOptions(['-f lavfi'])
+      cmd = cmd.input(`color=c=${hex}:r=25:s=1080x1920:d=${duration + 1}`).inputOptions(['-f lavfi'])
     }
 
     // 2. Text with fade-in (text slides only)

@@ -165,9 +165,8 @@ async function getChromiumPath() {
  * Renders a Remotion composition to a local temp MP4.
  * Returns the temp file path, or null if REMOTION_BUNDLE_URL is not set.
  */
-async function renderRemotionClip(template, props, durationSecs) {
+async function renderRemotionClip(template, props, durationSecs, fps = 30) {
   if (!process.env.REMOTION_BUNDLE_URL) return null
-  const fps = 30
   const durationInFrames = Math.round(durationSecs * fps)
   const outPath = tmpFile('.mp4')
   try {
@@ -363,7 +362,7 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
       fontVibe: slide.fontVibe || 'bold',
       backgroundColor: bgColor,
       accentColor: accent,
-    }, duration)
+    }, duration, 25) // 25fps matches FFmpeg slides — prevents xfade timebase mismatch
     if (remotionPath) {
       return { path: remotionPath, duration }
     }
@@ -481,14 +480,20 @@ app.post('/composite', async (req, res) => {
           // Build xfade filter chain
           // offset_i = sum(durations[0..i]) - (i+1)*XFADE_DUR
           const filterParts = []
-          let prevLabel = '[0:v]'
+          // Normalize every clip to 25fps + timebase 1/25 before xfade.
+          // Remotion outputs 1/90000 timebase; FFmpeg slides use 1/12800 — xfade
+          // requires identical timebases on both inputs or it errors out.
+          for (let i = 0; i < slideClips.length; i++) {
+            filterParts.push(`[${i}:v]fps=fps=25,settb=expr=1/25[sv${i}]`)
+          }
+          let prevLabel = '[sv0]'
           let cumulativeDur = 0
           for (let i = 0; i < slideClips.length - 1; i++) {
             cumulativeDur += clipDurations[i]
             const offset = Math.max(0.1, cumulativeDur - XFADE_DUR * (i + 1))
             const transition = XFADE_TRANSITIONS[i % XFADE_TRANSITIONS.length]
             const outLabel = i === slideClips.length - 2 ? '[vout]' : `[v${i}]`
-            filterParts.push(`${prevLabel}[${i + 1}:v]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
+            filterParts.push(`${prevLabel}[sv${i + 1}]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
             prevLabel = outLabel
           }
           const filterComplex = filterParts.join(';')

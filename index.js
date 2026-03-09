@@ -139,6 +139,46 @@ function cleanup(...files) {
   }
 }
 
+// Mixes an array of sound effects into an already-composited video file.
+// Each sfx has { path (local temp file), startTime (seconds), duration }.
+// The voiceover is already baked into `inputVideo`; this adds additional
+// audio tracks via adelay + amix without re-encoding the video stream.
+function mixSoundEffects(inputVideo, sfxTracks, outputVideo) {
+  return new Promise((resolve, reject) => {
+    let cmd = ffmpeg(inputVideo) // Input 0: existing composited video + voiceover
+    sfxTracks.forEach(sfx => cmd = cmd.input(sfx.path))
+
+    // Build filter_complex: normalize voice, delay+attenuate each sfx, then amix all
+    const filterParts = []
+    filterParts.push('[0:a]aresample=44100,aformat=channel_layouts=stereo[voice]')
+    sfxTracks.forEach((sfx, i) => {
+      const delayMs = Math.round(Math.max(0, sfx.startTime) * 1000)
+      filterParts.push(
+        `[${i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,adelay=${delayMs}|${delayMs},volume=0.45[sfx${i}]`
+      )
+    })
+    const mixLabels = ['[voice]', ...sfxTracks.map((_, i) => `[sfx${i}]`)].join('')
+    filterParts.push(`${mixLabels}amix=inputs=${sfxTracks.length + 1}:duration=first:normalize=0[aout]`)
+
+    cmd.outputOptions([
+      '-filter_complex', filterParts.join(';'),
+      '-map', '0:v:0',
+      '-map', '[aout]',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+      '-movflags', '+faststart',
+    ])
+    .output(outputVideo)
+    .on('start', cmdLine => slog('sfx-mix', 'cmd', { cmdLine }))
+    .on('end', resolve)
+    .on('error', (err, _stdout, stderr) => {
+      slog('sfx-mix', 'failed', { error: err.message, stderr: stderr?.slice(-500) })
+      reject(err)
+    })
+    .run()
+  })
+}
+
 function wrapText(text, maxChars) {
   const words = text.trim().split(/\s+/)
   const lines = []
@@ -305,10 +345,11 @@ app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
     backgroundType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
-    fontVibe = 'bold', slides = []
+    fontVibe = 'bold', slides = [],
+    soundEffects = [],  // Array of { url, startTime, duration }
   } = req.body
-  
-  slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl })
+
+  slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl, sfxCount: soundEffects.length })
 
   const tempFiles = []
   const videoOut = tmpFile('.mp4')
@@ -428,6 +469,39 @@ app.post('/composite', async (req, res) => {
           .output(videoOut)
           .on('end', resolve).on('error', reject).run()
       })
+    }
+
+    // ── Sound effect mixing (post-composite pass) ──────────────────────────
+    // Download each sfx audio file and mix them into the composited video at
+    // their specified startTimes. Failures are non-fatal — the original videoOut
+    // is used as-is if mixing fails.
+    const sfxFiles = []
+    if (Array.isArray(soundEffects) && soundEffects.length > 0) {
+      for (const sfx of soundEffects) {
+        if (!sfx?.url) continue
+        try {
+          const sfxPath = tmpFile('.mp3')
+          await download(sfx.url, sfxPath)
+          sfxFiles.push({ path: sfxPath, startTime: sfx.startTime ?? 0 })
+          tempFiles.push(sfxPath)
+        } catch (e) {
+          slog('sfx-download', 'Failed to download sfx — skipping', { url: sfx.url, error: e.message })
+        }
+      }
+
+      if (sfxFiles.length > 0) {
+        const mixedOut = tmpFile('.mp4')
+        tempFiles.push(mixedOut)
+        try {
+          await mixSoundEffects(videoOut, sfxFiles, mixedOut)
+          // Swap videoOut content with the mixed version
+          fs.renameSync(mixedOut, videoOut)
+          slog('sfx-mix', 'Sound effects mixed', { count: sfxFiles.length })
+        } catch (e) {
+          slog('sfx-mix', 'Mixing failed — using original composite', { error: e.message })
+          // Non-fatal: videoOut remains the original without sfx
+        }
+      }
     }
 
     const clipDuration = await probeFileDuration(videoOut)

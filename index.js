@@ -588,37 +588,76 @@ app.post('/ocr-frames', async (req, res) => {
     return res.status(400).json({ error: 'videoUrl and timestamps[] required' })
   }
 
+  const t0 = Date.now()
   const videoFile = tmpFile('.mp4')
   const frameFiles = timestamps.map(() => tmpFile('.png'))
   try {
+    slog('ocr-frames', 'Start', {
+      frameCount: timestamps.length,
+      timestamps: timestamps.map(t => +t.toFixed(2)),
+      videoUrl: videoUrl.slice(-60), // tail of URL for context without full token exposure
+    })
+
+    const t1 = Date.now()
     await download(videoUrl, videoFile)
+    slog('ocr-frames', 'Video downloaded', { downloadMs: Date.now() - t1 })
 
     // Extract all frames in parallel
+    const t2 = Date.now()
+    const frameErrors = []
     await Promise.all(timestamps.map((ts, i) =>
-      new Promise((resolve, reject) => {
+      new Promise((resolve) => {
         ffmpeg(videoFile)
           .seekInput(Math.max(0, ts))
           .outputOptions(['-vframes 1'])
           .output(frameFiles[i])
           .on('end', resolve)
-          .on('error', reject)
+          .on('error', (err) => {
+            frameErrors.push({ frame: i, ts: +ts.toFixed(2), error: err.message })
+            resolve() // don't reject — partial results are still useful
+          })
           .run()
       })
     ))
+    slog('ocr-frames', 'Frames extracted', {
+      extractMs: Date.now() - t2,
+      total: timestamps.length,
+      failed: frameErrors.length,
+      frameErrors,
+    })
 
     // Run Tesseract on each frame — psm 11 (sparse text) handles arbitrary text placement
-    const texts = frameFiles.map(f => {
+    const t3 = Date.now()
+    const texts = frameFiles.map((f, i) => {
+      if (!require('fs').existsSync(f)) {
+        slog('ocr-frames', 'Frame file missing — skipping OCR', { frame: i, ts: +timestamps[i].toFixed(2) })
+        return ''
+      }
       try {
-        return execSync(`tesseract ${f} stdout --oem 3 --psm 11 2>/dev/null`, { encoding: 'utf8' }).trim()
-      } catch {
+        const text = execSync(`tesseract ${f} stdout --oem 3 --psm 11 2>/dev/null`, { encoding: 'utf8' }).trim()
+        slog('ocr-frames', 'Tesseract result', {
+          frame: i,
+          ts: +timestamps[i].toFixed(2),
+          chars: text.length,
+          preview: text.slice(0, 120) || '(empty)',
+        })
+        return text
+      } catch (err) {
+        slog('ocr-frames', 'Tesseract failed for frame', { frame: i, ts: +timestamps[i].toFixed(2), error: err.message })
         return ''
       }
     })
 
-    slog('ocr-frames', 'Done', { count: texts.length, nonEmpty: texts.filter(t => t).length })
+    const nonEmpty = texts.filter(t => t).length
+    slog('ocr-frames', 'Done', {
+      totalMs: Date.now() - t0,
+      tesseractMs: Date.now() - t3,
+      framesWithText: nonEmpty,
+      framesEmpty: texts.length - nonEmpty,
+    })
     res.json({ texts })
   } catch (err) {
-    slog('ocr-frames', 'Error', { error: err.message })
+    slog('ocr-frames', 'Fatal error', { error: err.message, totalMs: Date.now() - t0 })
     res.status(500).json({ error: err.message })
   } finally {
     cleanup(videoFile, ...frameFiles)

@@ -579,6 +579,43 @@ app.post('/render', async (req, res) => {
   }
 })
 
+// POST /extract-frames
+// Extracts N frames from a video at specified timestamps and returns them as base64 JPEGs.
+// Used for async OCR checks after compositing cinematic/canvas scenes.
+app.post('/extract-frames', async (req, res) => {
+  const { videoUrl, timestamps } = req.body
+  if (!videoUrl || !Array.isArray(timestamps) || timestamps.length === 0) {
+    return res.status(400).json({ error: 'videoUrl and timestamps[] required' })
+  }
+
+  const videoFile = tmpFile('.mp4')
+  const frameFiles = timestamps.map(() => tmpFile('.jpg'))
+  try {
+    await download(videoUrl, videoFile)
+
+    await Promise.all(timestamps.map((ts, i) =>
+      new Promise((resolve, reject) => {
+        ffmpeg(videoFile)
+          .seekInput(Math.max(0, ts))
+          .outputOptions(['-vframes 1', '-q:v 5'])
+          .output(frameFiles[i])
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+    ))
+
+    const frames = frameFiles.map(f => fs.readFileSync(f).toString('base64'))
+    slog('extract-frames', 'Done', { count: frames.length })
+    res.json({ frames })
+  } catch (err) {
+    slog('extract-frames', 'Error', { error: err.message })
+    res.status(500).json({ error: err.message })
+  } finally {
+    cleanup(videoFile, ...frameFiles)
+  }
+})
+
 app.get('/health', (_, res) => res.json({ ok: true }))
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {

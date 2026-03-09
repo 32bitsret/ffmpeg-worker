@@ -579,25 +579,26 @@ app.post('/render', async (req, res) => {
   }
 })
 
-// POST /extract-frames
-// Extracts N frames from a video at specified timestamps and returns them as base64 JPEGs.
-// Used for async OCR checks after compositing cinematic/canvas scenes.
-app.post('/extract-frames', async (req, res) => {
+// POST /ocr-frames
+// Extracts N frames from a video at specified timestamps, runs Tesseract OCR on each,
+// and returns the detected text strings. Used for on-screen word checks after compositing.
+app.post('/ocr-frames', async (req, res) => {
   const { videoUrl, timestamps } = req.body
   if (!videoUrl || !Array.isArray(timestamps) || timestamps.length === 0) {
     return res.status(400).json({ error: 'videoUrl and timestamps[] required' })
   }
 
   const videoFile = tmpFile('.mp4')
-  const frameFiles = timestamps.map(() => tmpFile('.jpg'))
+  const frameFiles = timestamps.map(() => tmpFile('.png'))
   try {
     await download(videoUrl, videoFile)
 
+    // Extract all frames in parallel
     await Promise.all(timestamps.map((ts, i) =>
       new Promise((resolve, reject) => {
         ffmpeg(videoFile)
           .seekInput(Math.max(0, ts))
-          .outputOptions(['-vframes 1', '-q:v 5'])
+          .outputOptions(['-vframes 1'])
           .output(frameFiles[i])
           .on('end', resolve)
           .on('error', reject)
@@ -605,11 +606,19 @@ app.post('/extract-frames', async (req, res) => {
       })
     ))
 
-    const frames = frameFiles.map(f => fs.readFileSync(f).toString('base64'))
-    slog('extract-frames', 'Done', { count: frames.length })
-    res.json({ frames })
+    // Run Tesseract on each frame — psm 11 (sparse text) handles arbitrary text placement
+    const texts = frameFiles.map(f => {
+      try {
+        return execSync(`tesseract ${f} stdout --oem 3 --psm 11 2>/dev/null`, { encoding: 'utf8' }).trim()
+      } catch {
+        return ''
+      }
+    })
+
+    slog('ocr-frames', 'Done', { count: texts.length, nonEmpty: texts.filter(t => t).length })
+    res.json({ texts })
   } catch (err) {
-    slog('extract-frames', 'Error', { error: err.message })
+    slog('ocr-frames', 'Error', { error: err.message })
     res.status(500).json({ error: err.message })
   } finally {
     cleanup(videoFile, ...frameFiles)

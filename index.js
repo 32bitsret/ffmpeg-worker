@@ -425,12 +425,12 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
 app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
-    backgroundType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
+    sceneType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
     fontVibe = 'bold', slides = [], accentColor = null,
     soundEffects = [],  // Array of { url, startTime, duration }
   } = req.body
 
-  slog('composite', 'Start', { outputKey, backgroundType, hasVoiceover: !!voiceoverUrl, sfxCount: soundEffects.length })
+  slog('composite', 'Start', { outputKey, sceneType, hasVoiceover: !!voiceoverUrl, sfxCount: soundEffects.length })
 
   const tempFiles = []
   const videoOut = tmpFile('.mp4')
@@ -439,7 +439,7 @@ app.post('/composite', async (req, res) => {
   try {
     if (audioIn) await download(voiceoverUrl, audioIn)
 
-    if (backgroundType === 'slideshow') {
+    if (sceneType === 'slideshow') {
       // ── Slideshow Logic ────────────────────────────────────────────────────
       const slideClips = []
       const clipDurations = []
@@ -525,8 +525,8 @@ app.post('/composite', async (req, res) => {
       })
     } else {
       // ── Standard Logic (Cinematic, Canvas, Video, Remotion) ───────────────
-      const videoIn = ['cinematic', 'video', 'canvas', 'remotion'].includes(backgroundType) ? tmpFile('.mp4') : null
-      const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
+      const videoIn = ['cinematic', 'video', 'canvas', 'remotion'].includes(sceneType) ? tmpFile('.mp4') : null
+      const imageIn = sceneType === 'image' ? tmpFile('.jpg') : null
       if (videoIn) { await download(visualClipUrl, videoIn); tempFiles.push(videoIn) }
       if (imageIn && imageUrl) { await download(imageUrl, imageIn); tempFiles.push(imageIn) }
 
@@ -538,16 +538,16 @@ app.post('/composite', async (req, res) => {
         const videoFilters = []
         // Always force portrait 9:16 output regardless of source dimensions —
         // except remotion which already outputs 1080x1920 natively.
-        if (backgroundType !== 'remotion') {
+        if (sceneType !== 'remotion') {
           if (videoIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
           if (imageIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
         }
 
         // Remotion handles all text rendering internally — skip drawtext overlays.
-        if (backgroundType !== 'remotion') {
+        if (sceneType !== 'remotion') {
           const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
-          const bgIsLight = (backgroundType === 'canvas') ? isLightColor(effectiveHex) : false
-          const textFilter = buildRichTextFilter(onScreenText, fontVibe, backgroundType === 'canvas', bgIsLight)
+          const bgIsLight = (sceneType === 'canvas') ? isLightColor(effectiveHex) : false
+          const textFilter = buildRichTextFilter(onScreenText, fontVibe, sceneType === 'canvas', bgIsLight)
           if (textFilter) videoFilters.push(textFilter)
 
           if (FONT_PATH && watermark === true) {

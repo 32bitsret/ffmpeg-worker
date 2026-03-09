@@ -437,8 +437,8 @@ app.post('/composite', async (req, res) => {
           .run()
       })
     } else {
-      // ── Standard Logic (Cinematic, Canvas, Video) ──────────────────────────
-      const videoIn = (backgroundType === 'cinematic' || backgroundType === 'video' || backgroundType === 'canvas') ? tmpFile('.mp4') : null
+      // ── Standard Logic (Cinematic, Canvas, Video, Remotion) ───────────────
+      const videoIn = ['cinematic', 'video', 'canvas', 'remotion'].includes(backgroundType) ? tmpFile('.mp4') : null
       const imageIn = backgroundType === 'image' ? tmpFile('.jpg') : null
       if (videoIn) { await download(visualClipUrl, videoIn); tempFiles.push(videoIn) }
       if (imageIn && imageUrl) { await download(imageUrl, imageIn); tempFiles.push(imageIn) }
@@ -449,22 +449,28 @@ app.post('/composite', async (req, res) => {
         else cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration || 10}`])
 
         const videoFilters = []
-        // Always force portrait 9:16 output regardless of source dimensions.
-        // Veo and other text-to-video models may generate landscape clips.
-        if (videoIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
-        if (imageIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
-        
-        const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
-        const bgIsLight = (backgroundType === 'canvas') ? isLightColor(effectiveHex) : false
-        const textFilter = buildRichTextFilter(onScreenText, fontVibe, backgroundType === 'canvas', bgIsLight)
-        if (textFilter) videoFilters.push(textFilter)
-
-        if (FONT_PATH && watermark === true) {
-          videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+        // Always force portrait 9:16 output regardless of source dimensions —
+        // except remotion which already outputs 1080x1920 natively.
+        if (backgroundType !== 'remotion') {
+          if (videoIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+          if (imageIn) videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
         }
 
-        cmd.videoFilters(videoFilters)
-          .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-ar 44100', '-ac 2', audioIn ? '-shortest' : `-t ${duration || 10}`])
+        // Remotion handles all text rendering internally — skip drawtext overlays.
+        if (backgroundType !== 'remotion') {
+          const effectiveHex = canvasColor || CANVAS_COLORS[canvasStyle] || CANVAS_COLORS.dark
+          const bgIsLight = (backgroundType === 'canvas') ? isLightColor(effectiveHex) : false
+          const textFilter = buildRichTextFilter(onScreenText, fontVibe, backgroundType === 'canvas', bgIsLight)
+          if (textFilter) videoFilters.push(textFilter)
+
+          if (FONT_PATH && watermark === true) {
+            videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+          }
+        }
+
+        if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
+
+        cmd.outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-ar 44100', '-ac 2', audioIn ? '-shortest' : `-t ${duration || 10}`])
           .videoCodec('libx264').audioCodec('aac')
           .output(videoOut)
           .on('end', resolve).on('error', reject).run()
@@ -513,6 +519,83 @@ app.post('/composite', async (req, res) => {
     res.status(500).json({ error: err.message })
   } finally {
     cleanup(...tempFiles, audioIn, videoOut)
+  }
+})
+
+// POST /remotion-render
+// Renders a Remotion composition to a 1080x1920 MP4 using headless Chromium.
+// Requires REMOTION_BUNDLE_URL env var pointing to the deployed bundle index.html.
+// Output: silent video — voiceover is mixed separately by /composite.
+app.post('/remotion-render', async (req, res) => {
+  const { template, props = {}, duration, outputKey } = req.body
+
+  if (!process.env.REMOTION_BUNDLE_URL) {
+    return res.status(501).json({ error: 'REMOTION_BUNDLE_URL not configured' })
+  }
+  if (!template) {
+    return res.status(400).json({ error: 'template is required' })
+  }
+  if (!duration || duration <= 0) {
+    return res.status(400).json({ error: 'duration must be a positive number' })
+  }
+
+  const fps = 30
+  const durationInFrames = Math.round(duration * fps)
+  const outPath = tmpFile('.mp4')
+
+  slog('remotion-render', 'Start', { template, duration, durationInFrames, outputKey })
+
+  try {
+    const { renderMedia, selectComposition } = require('@remotion/renderer')
+    const chromium = require('@sparticuz/chromium')
+
+    const executablePath = await chromium.executablePath()
+
+    // Resolve the composition — lets Remotion validate template ID and default props
+    const composition = await selectComposition({
+      serveUrl: process.env.REMOTION_BUNDLE_URL,
+      id: template,
+      inputProps: props,
+      chromiumOptions: {
+        executablePath,
+        disableWebSecurity: true,
+        gl: 'swiftshader',
+      },
+    })
+
+    await renderMedia({
+      composition: {
+        ...composition,
+        durationInFrames,
+        fps,
+        width: 1080,
+        height: 1920,
+      },
+      serveUrl: process.env.REMOTION_BUNDLE_URL,
+      codec: 'h264',
+      outputLocation: outPath,
+      inputProps: props,
+      chromiumOptions: {
+        executablePath,
+        disableWebSecurity: true,
+        gl: 'swiftshader',
+      },
+      timeoutInMilliseconds: 150_000,
+      onProgress: ({ progress }) => {
+        slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })
+      },
+    })
+
+    const clipDuration = await probeFileDuration(outPath)
+    const outputUrl = await uploadToR2(outputKey, outPath, 'video/mp4')
+
+    slog('remotion-render', 'Done', { outputUrl, clipDuration })
+    res.json({ outputUrl, clipDuration })
+  } catch (err) {
+    slog('remotion-render', 'Error', { error: err.message, stack: err.stack?.slice(0, 400) })
+    res.status(500).json({ error: err.message })
+  } finally {
+    cleanup(outPath)
   }
 })
 

@@ -2,6 +2,7 @@ require('dotenv').config()
 const express = require('express')
 const ffmpeg = require('fluent-ffmpeg')
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
+const ffprobePath = require('@ffprobe-installer/ffprobe').path
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3')
 const { execSync } = require('child_process')
 const fs = require('fs')
@@ -11,6 +12,7 @@ const https = require('https')
 const http = require('http')
 
 ffmpeg.setFfmpegPath(ffmpegPath)
+ffmpeg.setFfprobePath(ffprobePath)
 
 // Returns the duration (seconds, float) of a local video file, or null on error.
 function probeFileDuration(filePath) {

@@ -87,6 +87,18 @@ const FONTS = detectFonts()
 const FONT_PATH = FONTS.fallback
 console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'Fonts detected', fonts: FONTS }))
 
+// Detect tesseract availability once at startup.
+// If not present, /ocr-frames returns 501 so the platform degrades gracefully
+// instead of triggering false spellcheck failures.
+let TESSERACT_AVAILABLE = false
+try {
+  execSync('tesseract --version', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  TESSERACT_AVAILABLE = true
+} catch {
+  TESSERACT_AVAILABLE = false
+}
+console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'Tesseract status', available: TESSERACT_AVAILABLE }))
+
 const app = express()
 app.use(express.json({ limit: '50mb' }))
 
@@ -136,6 +148,55 @@ async function uploadToR2(key, filePath, contentType) {
 function cleanup(...files) {
   for (const f of files) {
     try { if (f && fs.existsSync(f)) fs.unlinkSync(f) } catch {}
+  }
+}
+
+// Cache the chromium executablePath — resolving it is async and slow on cold start.
+let _chromiumExecPath = null
+async function getChromiumPath() {
+  if (!_chromiumExecPath) {
+    const chromium = require('@sparticuz/chromium')
+    _chromiumExecPath = await chromium.executablePath()
+  }
+  return _chromiumExecPath
+}
+
+/**
+ * Renders a Remotion composition to a local temp MP4.
+ * Returns the temp file path, or null if REMOTION_BUNDLE_URL is not set.
+ */
+async function renderRemotionClip(template, props, durationSecs) {
+  if (!process.env.REMOTION_BUNDLE_URL) return null
+  const fps = 30
+  const durationInFrames = Math.round(durationSecs * fps)
+  const outPath = tmpFile('.mp4')
+  try {
+    const { renderMedia, selectComposition } = require('@remotion/renderer')
+    const executablePath = await getChromiumPath()
+    const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
+
+    const composition = await selectComposition({
+      serveUrl: process.env.REMOTION_BUNDLE_URL,
+      id: template,
+      inputProps: props,
+      chromiumOptions,
+    })
+
+    await renderMedia({
+      composition: { ...composition, durationInFrames, fps, width: 1080, height: 1920 },
+      serveUrl: process.env.REMOTION_BUNDLE_URL,
+      codec: 'h264',
+      outputLocation: outPath,
+      inputProps: props,
+      chromiumOptions,
+      timeoutInMilliseconds: 150_000,
+    })
+
+    return outPath
+  } catch (err) {
+    slog('renderRemotionClip', 'Error', { template, error: err.message })
+    cleanup(outPath)
+    return null
   }
 }
 
@@ -288,9 +349,28 @@ function kenBurnsFilter(idx, frames) {
   }
 }
 
-async function createSlideClip(slide, canvasColor, idx, watermark = false) {
-  const outFile = tmpFile('.mp4')
+async function createSlideClip(slide, canvasColor, idx, watermark = false, accentColor = null) {
   const duration = slide.duration || 2.5
+
+  // Use Remotion for text slides — far superior typography and animations vs FFmpeg drawtext.
+  // Falls back to FFmpeg if REMOTION_BUNDLE_URL is not set or Remotion render fails.
+  if (slide.type === 'text' && process.env.REMOTION_BUNDLE_URL) {
+    const bgColor = slide.backgroundColor || canvasColor || '#1a1a2e'
+    const accent = accentColor || canvasColor || '#7c3aed'
+    slog('slide-clip', 'Rendering text slide via Remotion', { fontVibe: slide.fontVibe, duration })
+    const remotionPath = await renderRemotionClip('text-slide', {
+      text: slide.content || '',
+      fontVibe: slide.fontVibe || 'bold',
+      backgroundColor: bgColor,
+      accentColor: accent,
+    }, duration)
+    if (remotionPath) {
+      return { path: remotionPath, duration }
+    }
+    slog('slide-clip', 'Remotion render failed — falling back to FFmpeg drawtext', { content: slide.content })
+  }
+
+  const outFile = tmpFile('.mp4')
   const frames = Math.round(duration * 25)
 
   return new Promise(async (resolve, reject) => {
@@ -345,7 +425,7 @@ app.post('/composite', async (req, res) => {
   const {
     visualClipUrl, voiceoverUrl, onScreenText, duration, outputKey, watermark,
     backgroundType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
-    fontVibe = 'bold', slides = [],
+    fontVibe = 'bold', slides = [], accentColor = null,
     soundEffects = [],  // Array of { url, startTime, duration }
   } = req.body
 
@@ -363,7 +443,7 @@ app.post('/composite', async (req, res) => {
       const slideClips = []
       const clipDurations = []
       for (let i = 0; i < slides.length; i++) {
-        const clip = await createSlideClip(slides[i], canvasColor, i, watermark === true)
+        const clip = await createSlideClip(slides[i], canvasColor, i, watermark === true, accentColor)
         slideClips.push(clip.path)
         clipDurations.push(clip.duration)
         tempFiles.push(clip.path)
@@ -666,6 +746,10 @@ app.post('/render', async (req, res) => {
 // Extracts N frames from a video at specified timestamps, runs Tesseract OCR on each,
 // and returns the detected text strings. Used for on-screen word checks after compositing.
 app.post('/ocr-frames', async (req, res) => {
+  if (!TESSERACT_AVAILABLE) {
+    return res.status(501).json({ error: 'Tesseract not available on this host — install tesseract to enable OCR checks' })
+  }
+
   const { videoUrl, timestamps } = req.body
   if (!videoUrl || !Array.isArray(timestamps) || timestamps.length === 0) {
     return res.status(400).json({ error: 'videoUrl and timestamps[] required' })

@@ -681,57 +681,42 @@ app.post('/remotion-render', async (req, res) => {
       },
     })
 
-    // 1. Upload Clean version first (always unwatermarked, no external audio)
-    const cleanKey = outputKey.replace('.mp4', '-clean.mp4')
-    const cleanUrl = await uploadToR2(cleanKey, renderPath, 'video/mp4')
-    let videoOut = renderPath
+    // 1. ── Create the Clean Version (Baked Audio, NO Watermark) ───────────
+    const cleanPath = tmpFile('.mp4')
+    tempFiles.push(cleanPath)
 
-    // 2. ── Apply Watermark + Audio Mix for the Preview ────────────────────
-    // (Only if watermark is requested or voiceover is provided)
     const effectiveAudioUrl = voiceoverUrl || props.videoUrl
-    if (watermark === true || effectiveAudioUrl) {
-      const previewPath = tmpFile('.mp4')
-      tempFiles.push(previewPath)
-
-      if (effectiveAudioUrl) {
-        audioIn = tmpFile(effectiveAudioUrl.includes('.mp3') ? '.mp3' : '.mp4')
-        await download(effectiveAudioUrl, audioIn)
-      }
-
-      await new Promise((resolve, reject) => {
-        let cmd = ffmpeg(renderPath)
-        if (audioIn) {
-          cmd = cmd.input(audioIn)
-        } else {
-          cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration}`])
-        }
-
-        const videoFilters = []
-        if (FONT_PATH && watermark === true) {
-          videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
-        }
-
-        if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
-
-        // Map video from Remotion (0:v) and audio from voiceover/nullsrc (1:a)
-        cmd.outputOptions([
-          '-map 0:v:0',
-          '-map 1:a:0',
-          '-c:v libx264', '-preset fast', '-crf 23',
-          '-c:a aac', '-ar 44100', '-ac 2',
-          '-movflags +faststart',
-          audioIn ? '-shortest' : `-t ${duration}`
-        ])
-        .output(previewPath)
-        .on('end', resolve)
-        .on('error', reject)
-        .run()
-      })
-
-      videoOut = previewPath
+    if (effectiveAudioUrl) {
+      audioIn = tmpFile(effectiveAudioUrl.includes('.mp3') ? '.mp3' : '.mp4')
+      await download(effectiveAudioUrl, audioIn)
     }
 
-    // 3. ── Sound effect mixing (if any) ──────────────────────────────────
+    await new Promise((resolve, reject) => {
+      let cmd = ffmpeg(renderPath)
+      if (audioIn) {
+        cmd = cmd.input(audioIn)
+      } else {
+        cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration}`])
+      }
+
+      // No watermark filters here — this is the clean master
+      cmd.outputOptions([
+        '-map 0:v:0',
+        '-map 1:a:0',
+        '-c:v libx264', '-preset fast', '-crf 23',
+        '-c:a aac', '-ar 44100', '-ac 2',
+        '-movflags +faststart',
+        audioIn ? '-shortest' : `-t ${duration}`
+      ])
+      .output(cleanPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run()
+    })
+
+    let videoOut = cleanPath
+
+    // 2. ── Sound effect mixing (if any) ──────────────────────────────────
     if (Array.isArray(soundEffects) && soundEffects.length > 0) {
       const sfxTracks = []
       for (const sfx of soundEffects) {
@@ -752,18 +737,47 @@ app.post('/remotion-render', async (req, res) => {
         try {
           await mixSoundEffects(videoOut, sfxTracks, sfxOut)
           videoOut = sfxOut
-          slog('sfx-mix', 'Sound effects mixed', { count: sfxTracks.length })
+          slog('sfx-mix', 'Sound effects mixed into clean version', { count: sfxTracks.length })
         } catch (e) {
           slog('sfx-mix', 'Mixing failed — using previous videoOut', { error: e.message })
         }
       }
     }
 
-    const clipDuration = await probeFileDuration(videoOut)
-    const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
+    // 3. ── Upload the Clean Master ───────────────────────────────────────
+    const cleanKey = outputKey.replace('.mp4', '-clean.mp4')
+    const cleanUrl = await uploadToR2(cleanKey, videoOut, 'video/mp4')
 
-    slog('remotion-render', 'Done', { outputUrl, cleanUrl, clipDuration })
-    res.json({ outputUrl, cleanUrl, clipDuration })
+    // 4. ── Create the Watermarked Preview ─────────────────────────────────
+    let previewUrl = null
+    if (watermark === true) {
+      const previewPath = tmpFile('.mp4')
+      tempFiles.push(previewPath)
+
+      await new Promise((resolve, reject) => {
+        const filters = []
+        if (FONT_PATH) {
+          filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+        }
+
+        ffmpeg(videoOut)
+          .videoFilters(filters)
+          .outputOptions(['-c:a copy', '-preset fast', '-crf 23']) // Stream copy audio, it's already baked!
+          .output(previewPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+
+      previewUrl = await uploadToR2(outputKey, previewPath, 'video/mp4')
+    } else {
+      // If no watermark requested, the preview IS the clean version
+      previewUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
+    }
+
+    const clipDuration = await probeFileDuration(videoOut)
+    slog('remotion-render', 'Done', { outputUrl: previewUrl, cleanUrl, clipDuration })
+    res.json({ outputUrl: previewUrl, cleanUrl, clipDuration })
   } catch (err) {
     slog('remotion-render', 'Error', { error: err.message, stack: err.stack?.slice(0, 400) })
     res.status(500).json({ error: err.message })

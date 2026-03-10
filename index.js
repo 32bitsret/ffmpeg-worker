@@ -699,15 +699,22 @@ app.post('/remotion-render', async (req, res) => {
         cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration}`])
       }
 
-      // No watermark filters here — this is the clean master
-      cmd.outputOptions([
+      // No watermark filters here — this is the clean master.
+      // Always use -t ${duration} so the video length matches the scene duration set by GPT.
+      // When audioIn is shorter than duration, apad fills the remainder with silence so
+      // the voiceover ends naturally and the scene plays to its full length.
+      const outputOpts = [
         '-map 0:v:0',
         '-map 1:a:0',
         '-c:v libx264', '-preset fast', '-crf 23',
         '-c:a aac', '-ar 44100', '-ac 2',
+        `-t ${duration}`,
         '-movflags +faststart',
-        audioIn ? '-shortest' : `-t ${duration}`
-      ])
+      ]
+      if (audioIn) {
+        outputOpts.splice(outputOpts.indexOf('-c:a aac'), 0, `-af apad=whole_dur=${duration}`)
+      }
+      cmd.outputOptions(outputOpts)
       .output(cleanPath)
       .on('end', resolve)
       .on('error', reject)

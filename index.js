@@ -683,14 +683,18 @@ app.post('/remotion-render', async (req, res) => {
 
     let videoOut = renderPath
 
-    // ── Apply Watermark + Voiceover Mix ───────────────────────────────────
-    if (watermark === true || voiceoverUrl) {
+    // ── Resolve Audio Source ──────────────────────────────────────────────
+    // Priority: 1) explicit voiceoverUrl, 2) audio from props.videoUrl (for wrappers/subtitles), 3) silence
+    const effectiveAudioUrl = voiceoverUrl || props.videoUrl
+
+    // ── Apply Watermark + Audio Mix ───────────────────────────────────────
+    if (watermark === true || effectiveAudioUrl) {
       const mixedPath = tmpFile('.mp4')
       tempFiles.push(mixedPath)
 
-      if (voiceoverUrl) {
-        audioIn = tmpFile('.mp3')
-        await download(voiceoverUrl, audioIn)
+      if (effectiveAudioUrl) {
+        audioIn = tmpFile(effectiveAudioUrl.includes('.mp3') ? '.mp3' : '.mp4')
+        await download(effectiveAudioUrl, audioIn)
       }
 
       await new Promise((resolve, reject) => {

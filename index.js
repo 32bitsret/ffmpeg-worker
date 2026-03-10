@@ -167,10 +167,10 @@ async function getChromiumPath() {
  * Renders a Remotion composition to a local temp MP4.
  * Returns the temp file path, or null if REMOTION_BUNDLE_URL is not set.
  */
-async function renderRemotionClip(template, props, durationSecs, fps = 30) {
+async function renderRemotionClip(template, props, durationSecs, fps = 30, watermark = false) {
   if (!process.env.REMOTION_BUNDLE_URL) return null
   const durationInFrames = Math.round(durationSecs * fps)
-  const outPath = tmpFile('.mp4')
+  const renderPath = tmpFile('.mp4')
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const executablePath = await getChromiumPath()
@@ -187,16 +187,31 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30) {
       composition: { ...composition, durationInFrames, fps, width: 1080, height: 1920 },
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       codec: 'h264',
-      outputLocation: outPath,
+      outputLocation: renderPath,
       inputProps: props,
       chromiumOptions,
       timeoutInMilliseconds: 150_000,
     })
 
-    return outPath
+    if (watermark === true && FONT_PATH) {
+      const watermarkedPath = tmpFile('.mp4')
+      await new Promise((resolve, reject) => {
+        ffmpeg(renderPath)
+          .videoFilters(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+          .outputOptions(['-c:a copy', '-preset fast', '-crf 23'])
+          .output(watermarkedPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+      cleanup(renderPath)
+      return watermarkedPath
+    }
+
+    return renderPath
   } catch (err) {
     slog('renderRemotionClip', 'Error', { template, error: err.message })
-    cleanup(outPath)
+    cleanup(renderPath)
     return null
   }
 }
@@ -364,7 +379,7 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
       fontVibe: slide.fontVibe || 'bold',
       backgroundColor: bgColor,
       accentColor: accent,
-    }, duration, 25) // 25fps matches FFmpeg slides — prevents xfade timebase mismatch
+    }, duration, 25, watermark) // 25fps matches FFmpeg slides
     if (remotionPath) {
       return { path: remotionPath, duration }
     }

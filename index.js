@@ -823,11 +823,14 @@ app.post('/render', async (req, res) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
       if (musicFile) {
         const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)
-        cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1'])
+        // -stream_loop -1 loops the music file; -t 7200 caps at 2h so FFmpeg
+        // doesn't buffer indefinitely — amix duration=longest cuts at video end
+        cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1', '-t', '7200'])
         cmd = cmd.complexFilter([
           `[0:a]aresample=44100,aformat=channel_layouts=stereo,apad,volume=2.0[voice_padded]`,
           `[1:a]aresample=44100,aformat=channel_layouts=stereo,${musicVolumeFilter}[music]`,
-          `[voice_padded][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+          // duration=longest: output continues until the video audio ends (not just the voice)
+          `[voice_padded][music]amix=inputs=2:duration=longest:dropout_transition=2[aout]`,
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]', '-c:v libx264', '-c:a aac',
           '-preset fast', '-crf 20', '-movflags +faststart', '-shortest', '-threads 4'

@@ -838,6 +838,46 @@ app.post('/ocr-frames', async (req, res) => {
   }
 })
 
+// POST /trim
+// Trims a video to maxDuration seconds using stream copy (no re-encode — very fast).
+// The cut lands at the nearest keyframe before maxDuration.
+app.post('/trim', async (req, res) => {
+  const { videoUrl, maxDuration, outputKey } = req.body
+  if (!videoUrl || !maxDuration || !outputKey) {
+    return res.status(400).json({ error: 'videoUrl, maxDuration, and outputKey are required' })
+  }
+
+  const videoIn  = tmpFile('.mp4')
+  const videoOut = tmpFile('.mp4')
+  slog('trim', 'Start', { maxDuration, outputKey })
+
+  try {
+    await download(videoUrl, videoIn)
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoIn)
+        .outputOptions([
+          '-c copy',          // stream copy — no re-encode, finishes in <1s
+          `-t ${maxDuration}`,
+        ])
+        .output(videoOut)
+        .on('end', resolve)
+        .on('error', (err) => reject(new Error(err.message)))
+        .run()
+    })
+
+    const actualDuration = await probeFileDuration(videoOut)
+    const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
+    slog('trim', 'Done', { outputUrl, actualDuration })
+    res.json({ outputUrl, duration: actualDuration })
+  } catch (err) {
+    slog('trim', 'Error', { error: err.message })
+    res.status(500).json({ error: err.message })
+  } finally {
+    cleanup(videoIn, videoOut)
+  }
+})
+
 app.get('/health', (_, res) => res.json({ ok: true }))
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {

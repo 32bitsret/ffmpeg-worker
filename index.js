@@ -557,6 +557,12 @@ app.post('/composite', async (req, res) => {
 
         if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
 
+        // Remotion renders include a silent audio stream. Without explicit -map flags,
+        // FFmpeg auto-selects that silent stream over the voiceover from input 1.
+        if (sceneType === 'remotion' && audioIn) {
+          cmd = cmd.outputOptions(['-map 0:v:0', '-map 1:a:0'])
+        }
+
         cmd.outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-ar 44100', '-ac 2', audioIn ? '-shortest' : `-t ${duration || 10}`])
           .videoCodec('libx264').audioCodec('aac')
           .output(videoOut)
@@ -612,9 +618,9 @@ app.post('/composite', async (req, res) => {
 // POST /remotion-render
 // Renders a Remotion composition to a 1080x1920 MP4 using headless Chromium.
 // Requires REMOTION_BUNDLE_URL env var pointing to the deployed bundle index.html.
-// Output: silent video — voiceover is mixed separately by /composite.
+// Optional: voiceoverUrl, soundEffects[], watermark (boolean).
 app.post('/remotion-render', async (req, res) => {
-  const { template, props = {}, duration, outputKey } = req.body
+  const { template, props = {}, duration, outputKey, voiceoverUrl, soundEffects = [], watermark = false } = req.body
 
   if (!process.env.REMOTION_BUNDLE_URL) {
     return res.status(501).json({ error: 'REMOTION_BUNDLE_URL not configured' })
@@ -628,53 +634,113 @@ app.post('/remotion-render', async (req, res) => {
 
   const fps = 30
   const durationInFrames = Math.round(duration * fps)
-  const outPath = tmpFile('.mp4')
+  const renderPath = tmpFile('.mp4')
+  const tempFiles = [renderPath]
+  let audioIn = null
 
-  slog('remotion-render', 'Start', { template, duration, durationInFrames, outputKey })
+  slog('remotion-render', 'Start', { template, duration, durationInFrames, outputKey, hasVoiceover: !!voiceoverUrl })
 
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
-    const chromium = require('@sparticuz/chromium')
+    const executablePath = await getChromiumPath()
+    const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
 
-    const executablePath = await chromium.executablePath()
-
-    // Resolve the composition — lets Remotion validate template ID and default props
+    // Resolve the composition
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       id: template,
       inputProps: props,
-      chromiumOptions: {
-        executablePath,
-        disableWebSecurity: true,
-        gl: 'swiftshader',
-      },
+      chromiumOptions,
     })
 
     await renderMedia({
-      composition: {
-        ...composition,
-        durationInFrames,
-        fps,
-        width: 1080,
-        height: 1920,
-      },
+      composition: { ...composition, durationInFrames, fps, width: 1080, height: 1920 },
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       codec: 'h264',
-      outputLocation: outPath,
+      outputLocation: renderPath,
       inputProps: props,
-      chromiumOptions: {
-        executablePath,
-        disableWebSecurity: true,
-        gl: 'swiftshader',
-      },
+      chromiumOptions,
       timeoutInMilliseconds: 150_000,
       onProgress: ({ progress }) => {
         slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })
       },
     })
 
-    const clipDuration = await probeFileDuration(outPath)
-    const outputUrl = await uploadToR2(outputKey, outPath, 'video/mp4')
+    let videoOut = renderPath
+
+    // ── Apply Watermark + Voiceover Mix ───────────────────────────────────
+    if (watermark === true || voiceoverUrl) {
+      const mixedPath = tmpFile('.mp4')
+      tempFiles.push(mixedPath)
+
+      if (voiceoverUrl) {
+        audioIn = tmpFile('.mp3')
+        await download(voiceoverUrl, audioIn)
+      }
+
+      await new Promise((resolve, reject) => {
+        let cmd = ffmpeg(renderPath)
+        if (audioIn) {
+          cmd = cmd.input(audioIn)
+        } else {
+          cmd = cmd.input('anullsrc=r=44100:cl=stereo').inputOptions(['-f lavfi', `-t ${duration}`])
+        }
+
+        const videoFilters = []
+        if (FONT_PATH && watermark === true) {
+          videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+        }
+
+        if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
+
+        // Map video from Remotion (0:v) and audio from voiceover/nullsrc (1:a)
+        cmd.outputOptions([
+          '-map 0:v:0',
+          '-map 1:a:0',
+          '-c:v libx264', '-preset fast', '-crf 23',
+          '-c:a aac', '-ar 44100', '-ac 2',
+          '-movflags +faststart',
+          audioIn ? '-shortest' : `-t ${duration}`
+        ])
+        .output(mixedPath)
+        .on('end', resolve)
+        .on('error', reject)
+        .run()
+      })
+
+      videoOut = mixedPath
+    }
+
+    // ── Sound effect mixing (if any) ──────────────────────────────────────
+    if (Array.isArray(soundEffects) && soundEffects.length > 0) {
+      const sfxTracks = []
+      for (const sfx of soundEffects) {
+        if (!sfx?.url) continue
+        try {
+          const sfxPath = tmpFile('.mp3')
+          await download(sfx.url, sfxPath)
+          sfxTracks.push({ path: sfxPath, startTime: sfx.startTime ?? 0 })
+          tempFiles.push(sfxPath)
+        } catch (e) {
+          slog('sfx-download', 'Failed to download sfx — skipping', { url: sfx.url, error: e.message })
+        }
+      }
+
+      if (sfxTracks.length > 0) {
+        const sfxOut = tmpFile('.mp4')
+        tempFiles.push(sfxOut)
+        try {
+          await mixSoundEffects(videoOut, sfxTracks, sfxOut)
+          videoOut = sfxOut
+          slog('sfx-mix', 'Sound effects mixed', { count: sfxTracks.length })
+        } catch (e) {
+          slog('sfx-mix', 'Mixing failed — using previous videoOut', { error: e.message })
+        }
+      }
+    }
+
+    const clipDuration = await probeFileDuration(videoOut)
+    const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
 
     slog('remotion-render', 'Done', { outputUrl, clipDuration })
     res.json({ outputUrl, clipDuration })
@@ -682,7 +748,7 @@ app.post('/remotion-render', async (req, res) => {
     slog('remotion-render', 'Error', { error: err.message, stack: err.stack?.slice(0, 400) })
     res.status(500).json({ error: err.message })
   } finally {
-    cleanup(outPath)
+    cleanup(...tempFiles, audioIn)
   }
 })
 

@@ -572,9 +572,9 @@ app.post('/composite', async (req, res) => {
 
         if (videoFilters.length > 0) cmd = cmd.videoFilters(videoFilters)
 
-        // Remotion renders include a silent audio stream. Without explicit -map flags,
-        // FFmpeg auto-selects that silent stream over the voiceover from input 1.
-        if (sceneType === 'remotion' && audioIn) {
+        // Robust mapping: Use video from input 0 and audio from input 1 (voiceover).
+        // This prevents FFmpeg from selecting silent audio tracks from input 0.
+        if (audioIn) {
           cmd = cmd.outputOptions(['-map 0:v:0', '-map 1:a:0'])
         }
 

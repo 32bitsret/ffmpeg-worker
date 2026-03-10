@@ -681,16 +681,17 @@ app.post('/remotion-render', async (req, res) => {
       },
     })
 
+    // 1. Upload Clean version first (always unwatermarked, no external audio)
+    const cleanKey = outputKey.replace('.mp4', '-clean.mp4')
+    const cleanUrl = await uploadToR2(cleanKey, renderPath, 'video/mp4')
     let videoOut = renderPath
 
-    // ── Resolve Audio Source ──────────────────────────────────────────────
-    // Priority: 1) explicit voiceoverUrl, 2) audio from props.videoUrl (for wrappers/subtitles), 3) silence
+    // 2. ── Apply Watermark + Audio Mix for the Preview ────────────────────
+    // (Only if watermark is requested or voiceover is provided)
     const effectiveAudioUrl = voiceoverUrl || props.videoUrl
-
-    // ── Apply Watermark + Audio Mix ───────────────────────────────────────
     if (watermark === true || effectiveAudioUrl) {
-      const mixedPath = tmpFile('.mp4')
-      tempFiles.push(mixedPath)
+      const previewPath = tmpFile('.mp4')
+      tempFiles.push(previewPath)
 
       if (effectiveAudioUrl) {
         audioIn = tmpFile(effectiveAudioUrl.includes('.mp3') ? '.mp3' : '.mp4')
@@ -721,16 +722,16 @@ app.post('/remotion-render', async (req, res) => {
           '-movflags +faststart',
           audioIn ? '-shortest' : `-t ${duration}`
         ])
-        .output(mixedPath)
+        .output(previewPath)
         .on('end', resolve)
         .on('error', reject)
         .run()
       })
 
-      videoOut = mixedPath
+      videoOut = previewPath
     }
 
-    // ── Sound effect mixing (if any) ──────────────────────────────────────
+    // 3. ── Sound effect mixing (if any) ──────────────────────────────────
     if (Array.isArray(soundEffects) && soundEffects.length > 0) {
       const sfxTracks = []
       for (const sfx of soundEffects) {
@@ -761,8 +762,8 @@ app.post('/remotion-render', async (req, res) => {
     const clipDuration = await probeFileDuration(videoOut)
     const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
 
-    slog('remotion-render', 'Done', { outputUrl, clipDuration })
-    res.json({ outputUrl, clipDuration })
+    slog('remotion-render', 'Done', { outputUrl, cleanUrl, clipDuration })
+    res.json({ outputUrl, cleanUrl, clipDuration })
   } catch (err) {
     slog('remotion-render', 'Error', { error: err.message, stack: err.stack?.slice(0, 400) })
     res.status(500).json({ error: err.message })

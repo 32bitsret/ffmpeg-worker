@@ -182,13 +182,16 @@ function cleanup(...files) {
   }
 }
 
-// Cache the chromium executablePath — resolving it is async and slow on cold start.
+// Cache the chromium executablePath and chromeMode — resolving is async and slow on cold start.
 let _chromiumExecPath = null
+let _chromeMode = 'headless-shell' // default for @sparticuz/chromium (chrome-headless-shell binary)
 async function getChromiumPath() {
   if (!_chromiumExecPath) {
     // Prefer explicit env override (e.g. set in Railway dashboard)
     if (process.env.CHROMIUM_EXECUTABLE_PATH) {
       _chromiumExecPath = process.env.CHROMIUM_EXECUTABLE_PATH
+      // Assume full Chrome if explicitly set — caller can override via CHROME_MODE env var
+      _chromeMode = process.env.CHROME_MODE || 'chrome'
     } else {
       // Try to find system chromium (installed via nixpacks) — properly patchelf'd for Nix
       const { execSync } = require('child_process')
@@ -202,12 +205,15 @@ async function getChromiumPath() {
       }
       if (systemPath) {
         _chromiumExecPath = systemPath
-        slog('chromium', 'Using system chromium', { path: systemPath })
+        // Full Chrome binary: old --headless removed, must use new headless mode
+        _chromeMode = 'chrome'
+        slog('chromium', 'Using system chromium', { path: systemPath, chromeMode: _chromeMode })
       } else {
-        // Fall back to @sparticuz/chromium (works in Lambda-like envs)
+        // Fall back to @sparticuz/chromium — provides chrome-headless-shell, uses legacy headless mode
         const chromium = require('@sparticuz/chromium')
         _chromiumExecPath = await chromium.executablePath()
-        slog('chromium', 'Using @sparticuz/chromium', { path: _chromiumExecPath })
+        _chromeMode = 'headless-shell'
+        slog('chromium', 'Using @sparticuz/chromium', { path: _chromiumExecPath, chromeMode: _chromeMode })
       }
     }
   }
@@ -225,10 +231,8 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
-    // System chromium (full Chrome) dropped old --headless mode — use chromeMode:'chrome'
-    // so Remotion launches with --headless=new instead of the removed legacy flag.
     const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
-    const chromeMode = 'chrome'
+    const chromeMode = _chromeMode // 'chrome' for system binary, 'headless-shell' for @sparticuz
 
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
@@ -745,7 +749,7 @@ app.post('/remotion-render', async (req, res) => {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
     const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
-    const chromeMode = 'chrome'
+    const chromeMode = _chromeMode // 'chrome' for system binary, 'headless-shell' for @sparticuz
 
     // Resolve the composition
     const composition = await selectComposition({

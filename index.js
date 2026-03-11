@@ -808,7 +808,9 @@ app.post('/remotion-render', async (req, res) => {
         '-movflags +faststart',
       ]
       if (audioIn) {
-        outputOpts.splice(outputOpts.indexOf('-c:a aac'), 0, `-af apad=whole_dur=${duration}`)
+        // apad (no args) pads silence indefinitely; -t ${duration} caps the output.
+        // Avoids apad=whole_dur= which fails on some FFmpeg versions.
+        outputOpts.splice(outputOpts.indexOf('-c:a aac'), 0, '-af apad')
       }
       cmd.outputOptions(outputOpts)
       .output(cleanPath)

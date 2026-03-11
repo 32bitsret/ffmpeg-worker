@@ -252,8 +252,19 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
-    const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
-    const chromeMode = _chromeMode // 'chrome' for system binary, 'headless-shell' for @sparticuz
+    const chromiumOptions = {
+      disableWebSecurity: true,
+      gl: 'swiftshader',
+      // Reduce Chromium memory footprint to prevent OOM crashes on Railway
+      additionalChromiumArgs: [
+        '--disable-dev-shm-usage',  // use /tmp instead of /dev/shm (small on most hosts)
+        '--disable-gpu',
+        '--no-sandbox',
+        '--single-process',         // single process = lower peak RSS
+        '--js-flags=--max-old-space-size=512',
+      ],
+    }
+    const chromeMode = _chromeMode
 
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
@@ -273,6 +284,7 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       browserExecutable,
       chromiumOptions,
       chromeMode,
+      concurrency: 1,              // one tab at a time — prevents memory spikes
       timeoutInMilliseconds: 150_000,
     })
 
@@ -769,10 +781,19 @@ app.post('/remotion-render', async (req, res) => {
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
-    const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
-    const chromeMode = _chromeMode // 'chrome' for system binary, 'headless-shell' for @sparticuz
+    const chromiumOptions = {
+      disableWebSecurity: true,
+      gl: 'swiftshader',
+      additionalChromiumArgs: [
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--single-process',
+        '--js-flags=--max-old-space-size=512',
+      ],
+    }
+    const chromeMode = _chromeMode
 
-    // Resolve the composition
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       id: template,
@@ -791,6 +812,7 @@ app.post('/remotion-render', async (req, res) => {
       browserExecutable,
       chromiumOptions,
       chromeMode,
+      concurrency: 1,
       timeoutInMilliseconds: 150_000,
       onProgress: ({ progress }) => {
         slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })

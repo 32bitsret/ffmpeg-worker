@@ -104,6 +104,35 @@ console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'Tesseract statu
 const app = express()
 app.use(express.json({ limit: '50mb' }))
 
+const { createClient } = require('@supabase/supabase-js')
+const supabase = (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null
+
+async function updateProjectStatus(projectId, updates) {
+  if (!supabase || !projectId) return
+  try {
+    const { error } = await supabase.from('projects').update(updates).eq('id', projectId)
+    if (error) console.error(`[supabase] Failed to update project ${projectId}:`, error.message)
+    else console.log(`[supabase] Updated project ${projectId} status to: ${updates.status || 'unchanged'}`)
+  } catch (err) {
+    console.error(`[supabase] Unexpected error updating project ${projectId}:`, err.message)
+  }
+}
+
+async function updateSceneStatus(sceneId, updates) {
+  if (!supabase || !sceneId) return
+  try {
+    const { error } = await supabase.from('scenes').update({
+      ...updates,
+      updated_at: new Date().toISOString()
+    }).eq('id', sceneId)
+    if (error) console.error(`[supabase] Failed to update scene ${sceneId}:`, error.message)
+  } catch (err) {
+    console.error(`[supabase] Unexpected error updating scene ${sceneId}:`, err.message)
+  }
+}
+
 const r2 = new S3Client({
   region: 'auto',
   endpoint: `https://${process.env.CLOUDFLARE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -443,9 +472,10 @@ app.post('/composite', async (req, res) => {
     sceneType = 'cinematic', canvasStyle = 'dark', canvasColor = null, imageUrl,
     fontVibe = 'bold', slides = [], accentColor = null,
     soundEffects = [],  // Array of { url, startTime, duration }
+    projectId, sceneId, // Optional for direct Supabase updates
   } = req.body
 
-  slog('composite', 'Start', { outputKey, sceneType, hasVoiceover: !!voiceoverUrl, sfxCount: soundEffects.length })
+  slog('composite', 'Start', { outputKey, sceneType, hasVoiceover: !!voiceoverUrl, sfxCount: soundEffects.length, projectId, sceneId })
 
   const tempFiles = []
   const videoOut = tmpFile('.mp4')
@@ -490,9 +520,10 @@ app.post('/composite', async (req, res) => {
           cmd.outputOptions([
             '-map 0:v:0', `-map ${audioIdx}:a:0`,
             '-c:v copy', '-c:a aac', '-ar 44100', '-ac 2',
-            audioIn ? '-shortest' : `-t ${clipDurations[0].toFixed(3)}`,
+            audioIn ? `-af apad=whole_dur=${clipDurations[0].toFixed(3)}` : null,
+            `-t ${clipDurations[0].toFixed(3)}`,
             '-movflags +faststart',
-          ])
+          ].filter(Boolean))
         } else {
           // Build xfade filter chain
           // offset_i = sum(durations[0..i]) - (i+1)*XFADE_DUR
@@ -513,7 +544,17 @@ app.post('/composite', async (req, res) => {
             filterParts.push(`${prevLabel}[sv${i + 1}]xfade=transition=${transition}:duration=${XFADE_DUR}:offset=${offset.toFixed(3)}${outLabel}`)
             prevLabel = outLabel
           }
-          const filterComplex = filterParts.join(';')
+          
+          // Audio padding filter if audio is shorter than total video duration
+          const audioFilter = audioIn 
+            ? `[${audioIdx}:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur=${totalVideoDur.toFixed(3)}[aout]`
+            : null;
+
+          const filterComplex = [
+            ...filterParts,
+            ...(audioFilter ? [audioFilter] : [])
+          ].join(';')
+          
           slog('xfade', 'filter_complex', { filterComplex, clips: slideClips.length, durations: clipDurations })
 
           // Pass filter_complex as raw output option to bypass any fluent-ffmpeg
@@ -521,11 +562,11 @@ app.post('/composite', async (req, res) => {
           cmd.outputOptions([
             '-filter_complex', filterComplex,
             '-map', '[vout]',
-            '-map', `${audioIdx}:a:0`,
+            '-map', audioFilter ? '[aout]' : `${audioIdx}:a:0`,
             '-c:v', 'libx264', '-c:a', 'aac', '-ar', '44100', '-ac', '2',
             '-preset', 'fast', '-crf', '23', '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
-            ...(audioIn ? ['-shortest'] : ['-t', totalVideoDur.toFixed(3)]),
+            '-t', totalVideoDur.toFixed(3),
           ])
         }
 
@@ -574,11 +615,18 @@ app.post('/composite', async (req, res) => {
 
         // Robust mapping: Use video from input 0 and audio from input 1 (voiceover).
         // This prevents FFmpeg from selecting silent audio tracks from input 0.
+        const outputOpts = [
+          '-preset fast', '-crf 23', '-movflags +faststart',
+          '-ar 44100', '-ac 2',
+          '-t', (duration || 10).toString()
+        ]
+
         if (audioIn) {
           cmd = cmd.outputOptions(['-map 0:v:0', '-map 1:a:0'])
+          outputOpts.push(`-af apad=whole_dur=${duration || 10}`)
         }
 
-        cmd.outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-ar 44100', '-ac 2', audioIn ? '-shortest' : `-t ${duration || 10}`])
+        cmd.outputOptions(outputOpts)
           .videoCodec('libx264').audioCodec('aac')
           .output(videoOut)
           .on('end', resolve).on('error', reject).run()
@@ -620,6 +668,15 @@ app.post('/composite', async (req, res) => {
 
     const clipDuration = await probeFileDuration(videoOut)
     const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
+    
+    // Direct Supabase update for robustness
+    if (sceneId) {
+      await updateSceneStatus(sceneId, {
+        generation_status: 'done',
+        duration: clipDuration
+      })
+    }
+
     slog('composite', 'Done', { outputUrl, clipDuration })
     res.json({ outputUrl, clipDuration })
   } catch (err) {
@@ -635,7 +692,7 @@ app.post('/composite', async (req, res) => {
 // Requires REMOTION_BUNDLE_URL env var pointing to the deployed bundle index.html.
 // Optional: voiceoverUrl, soundEffects[], watermark (boolean).
 app.post('/remotion-render', async (req, res) => {
-  const { template, props = {}, duration, outputKey, voiceoverUrl, soundEffects = [], watermark = false } = req.body
+  const { template, props = {}, duration, outputKey, voiceoverUrl, soundEffects = [], watermark = false, projectId, sceneId } = req.body
 
   if (!process.env.REMOTION_BUNDLE_URL) {
     return res.status(501).json({ error: 'REMOTION_BUNDLE_URL not configured' })
@@ -653,7 +710,7 @@ app.post('/remotion-render', async (req, res) => {
   const tempFiles = [renderPath]
   let audioIn = null
 
-  slog('remotion-render', 'Start', { template, duration, durationInFrames, outputKey, hasVoiceover: !!voiceoverUrl })
+  slog('remotion-render', 'Start', { template, duration, durationInFrames, outputKey, hasVoiceover: !!voiceoverUrl, projectId, sceneId })
 
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
@@ -783,6 +840,15 @@ app.post('/remotion-render', async (req, res) => {
     }
 
     const clipDuration = await probeFileDuration(videoOut)
+    
+    // Direct Supabase update for robustness
+    if (sceneId) {
+      await updateSceneStatus(sceneId, {
+        generation_status: 'done',
+        duration: clipDuration
+      })
+    }
+
     slog('remotion-render', 'Done', { outputUrl: previewUrl, cleanUrl, clipDuration })
     res.json({ outputUrl: previewUrl, cleanUrl, clipDuration })
   } catch (err) {
@@ -811,8 +877,8 @@ function buildMusicVolumeFilter(timeline, fallbackVolume) {
 }
 
 app.post('/render', async (req, res) => {
-  const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2, musicVolumeTimeline } = req.body
-  slog('render', 'Start', { clips: clipUrls?.length, outputKey, hasMusic: !!backgroundMusicUrl })
+  const { clipUrls, outputKey, backgroundMusicUrl, musicVolume = 0.2, musicVolumeTimeline, projectId, totalDuration } = req.body
+  slog('render', 'Start', { clips: clipUrls?.length, outputKey, hasMusic: !!backgroundMusicUrl, projectId, totalDuration })
   if (!clipUrls?.length) return res.status(400).json({ error: 'No clip URLs provided' })
   const clipFiles = []
   const listFile = tmpFile('.txt')
@@ -828,27 +894,50 @@ app.post('/render', async (req, res) => {
     fs.writeFileSync(listFile, clipFiles.map(f => `file '${f}'`).join('\n'))
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
+      
+      const outputOptions = ['-c:v libx264', '-c:a aac', '-preset fast', '-crf 20', '-movflags +faststart', '-threads 4']
+      if (totalDuration) {
+        outputOptions.push('-t', totalDuration.toString())
+      }
+
       if (musicFile) {
         const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)
         // -stream_loop -1 loops the music file; -t 7200 caps at 2h so FFmpeg
         // doesn't buffer indefinitely — amix duration=longest cuts at video end
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1', '-t', '7200'])
+        
+        // Ensure we have a valid audio stream to mix into.
+        // We use anullsrc to create a silent base of the exact video duration,
+        // then mix the concatenated video audio (0:a) and the music (1:a) into it.
+        const totalDur = totalDuration || 30
         cmd = cmd.complexFilter([
-          `[0:a]aresample=44100,aformat=channel_layouts=stereo,apad,volume=2.0[voice_padded]`,
+          `anullsrc=r=44100:cl=stereo:d=${totalDur}[silence]`,
+          `[0:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur=${totalDur},volume=2.0[voice_padded]`,
           `[1:a]aresample=44100,aformat=channel_layouts=stereo,${musicVolumeFilter}[music]`,
-          // duration=longest: output continues until the video audio ends (not just the voice)
-          `[voice_padded][music]amix=inputs=2:duration=longest:dropout_transition=2[aout]`,
+          `[silence][voice_padded]amix=inputs=2:duration=first[base_audio]`,
+          `[base_audio][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
         ]).outputOptions([
-          '-map 0:v:0', '-map [aout]', '-c:v libx264', '-c:a aac',
-          '-preset fast', '-crf 20', '-movflags +faststart', '-shortest', '-threads 4'
+          '-map 0:v:0', '-map [aout]',
+          ...outputOptions,
+          '-shortest'
         ])
       } else {
         cmd = cmd.videoCodec('libx264').audioCodec('aac')
-          .outputOptions(['-preset fast', '-crf 20', '-movflags +faststart', '-threads 4'])
+          .outputOptions(outputOptions)
       }
       cmd.output(videoOut).on('end', resolve).on('error', reject).run()
     })
     const outputUrl = await uploadToR2(outputKey, videoOut, 'video/mp4')
+    
+    // Direct Supabase update for robustness
+    if (projectId) {
+      await updateProjectStatus(projectId, {
+        status: 'exported',
+        exported_video_url: outputUrl,
+        exported_at: new Date().toISOString()
+      })
+    }
+
     slog('render', 'Done', { outputUrl })
     res.json({ outputUrl })
   } catch (err) {

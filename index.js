@@ -554,7 +554,7 @@ app.post('/composite', async (req, res) => {
           cmd.outputOptions([
             '-map 0:v:0', `-map ${audioIdx}:a:0`,
             '-c:v copy', '-c:a aac', '-ar 44100', '-ac 2',
-            audioIn ? `-af apad=whole_dur=${clipDurations[0].toFixed(3)}` : null,
+            audioIn ? `-af atrim=duration=${clipDurations[0].toFixed(3)},apad` : null,
             `-t ${clipDurations[0].toFixed(3)}`,
             '-movflags +faststart',
           ].filter(Boolean))
@@ -581,7 +581,7 @@ app.post('/composite', async (req, res) => {
           
           // Audio padding filter if audio is shorter than total video duration
           const audioFilter = audioIn 
-            ? `[${audioIdx}:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur=${totalVideoDur.toFixed(3)}[aout]`
+            ? `[${audioIdx}:a]aresample=44100,aformat=channel_layouts=stereo,atrim=duration=${totalVideoDur.toFixed(3)},apad[aout]`
             : null;
 
           const filterComplex = [
@@ -657,7 +657,7 @@ app.post('/composite', async (req, res) => {
 
         if (audioIn) {
           cmd = cmd.outputOptions(['-map 0:v:0', '-map 1:a:0'])
-          outputOpts.push(`-af apad=whole_dur=${duration || 10}`)
+          outputOpts.push(`-af atrim=duration=${duration || 10},apad`)
         }
 
         cmd.outputOptions(outputOpts)
@@ -953,7 +953,7 @@ app.post('/render', async (req, res) => {
         const totalDur = totalDuration || 30
         cmd = cmd.complexFilter([
           `anullsrc=r=44100:cl=stereo:d=${totalDur}[silence]`,
-          `[0:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur=${totalDur},volume=2.0[voice_padded]`,
+          `[0:a]aresample=44100,aformat=channel_layouts=stereo,atrim=duration=${totalDur},apad,volume=2.0[voice_padded]`,
           `[1:a]aresample=44100,aformat=channel_layouts=stereo,${musicVolumeFilter}[music]`,
           `[silence][voice_padded]amix=inputs=2:duration=first[base_audio]`,
           `[base_audio][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,

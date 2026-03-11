@@ -224,16 +224,15 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
   const renderPath = tmpFile('.mp4')
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
-    const executablePath = await getChromiumPath()
-    const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
-    const onBrowserDownload = () => ({ shouldDownload: false })
+    const browserExecutable = await getChromiumPath()
+    const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
 
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       id: template,
       inputProps: props,
+      browserExecutable,
       chromiumOptions,
-      onBrowserDownload,
     })
 
     await renderMedia({
@@ -242,8 +241,8 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       codec: 'h264',
       outputLocation: renderPath,
       inputProps: props,
+      browserExecutable,
       chromiumOptions,
-      onBrowserDownload,
       timeoutInMilliseconds: 150_000,
     })
 
@@ -739,17 +738,16 @@ app.post('/remotion-render', async (req, res) => {
 
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
-    const executablePath = await getChromiumPath()
-    const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
-    const onBrowserDownload = () => ({ shouldDownload: false })
+    const browserExecutable = await getChromiumPath()
+    const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
 
     // Resolve the composition
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       id: template,
       inputProps: props,
+      browserExecutable,
       chromiumOptions,
-      onBrowserDownload,
     })
 
     await renderMedia({
@@ -758,8 +756,8 @@ app.post('/remotion-render', async (req, res) => {
       codec: 'h264',
       outputLocation: renderPath,
       inputProps: props,
+      browserExecutable,
       chromiumOptions,
-      onBrowserDownload,
       timeoutInMilliseconds: 150_000,
       onProgress: ({ progress }) => {
         slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })

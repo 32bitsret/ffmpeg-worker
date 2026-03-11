@@ -1,8 +1,6 @@
 require('dotenv').config()
 const express = require('express')
 const ffmpeg = require('fluent-ffmpeg')
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
-const ffprobePath = require('@ffprobe-installer/ffprobe').path
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3')
 const { execSync } = require('child_process')
 const fs = require('fs')
@@ -11,8 +9,30 @@ const os = require('os')
 const https = require('https')
 const http = require('http')
 
-ffmpeg.setFfmpegPath(ffmpegPath)
-ffmpeg.setFfprobePath(ffprobePath)
+// ── FFmpeg version gate ───────────────────────────────────────────────────────
+// Requires system FFmpeg 6+. Fails fast on startup if not met so local and
+// remote environments are always in sync (no silent version mismatches).
+const FFMPEG_MIN_MAJOR = 6
+;(function checkFfmpegVersion() {
+  let versionLine = ''
+  try {
+    versionLine = execSync('ffmpeg -version 2>&1 | head -1', { encoding: 'utf8' }).trim()
+  } catch {
+    console.error('[ffmpeg] FATAL: ffmpeg not found on PATH. Install ffmpeg >= ' + FFMPEG_MIN_MAJOR + ' (e.g. brew install ffmpeg).')
+    process.exit(1)
+  }
+  const match = versionLine.match(/ffmpeg version (\d+)\./)
+  const major = match ? parseInt(match[1], 10) : 0
+  if (major < FFMPEG_MIN_MAJOR) {
+    console.error(`[ffmpeg] FATAL: Found "${versionLine}". Requires FFmpeg >= ${FFMPEG_MIN_MAJOR}.x. Upgrade: brew install ffmpeg`)
+    process.exit(1)
+  }
+  console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'FFmpeg version check passed', version: versionLine }))
+})()
+
+// Use system ffmpeg/ffprobe (matched to Nix ffmpeg_6 on Railway, brew ffmpeg on macOS)
+ffmpeg.setFfmpegPath(execSync('which ffmpeg', { encoding: 'utf8' }).trim())
+ffmpeg.setFfprobePath(execSync('which ffprobe', { encoding: 'utf8' }).trim())
 
 // Returns the duration (seconds, float) of a local video file, or null on error.
 function probeFileDuration(filePath) {
@@ -1118,10 +1138,4 @@ app.get('/health', (_, res) => res.json({ ok: true }))
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg: `ffmpeg-worker listening on :${PORT}` }))
-  // Log FFmpeg version at startup so it's visible in Railway logs
-  const { execSync } = require('child_process')
-  try {
-    const ver = execSync('ffmpeg -version 2>&1 | head -1', { encoding: 'utf8' }).trim()
-    console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'FFmpeg version', version: ver }))
-  } catch {}
 })

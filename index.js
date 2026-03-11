@@ -225,7 +225,10 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
   try {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
+    // System chromium (full Chrome) dropped old --headless mode — use chromeMode:'chrome'
+    // so Remotion launches with --headless=new instead of the removed legacy flag.
     const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
+    const chromeMode = 'chrome'
 
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
@@ -233,6 +236,7 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       inputProps: props,
       browserExecutable,
       chromiumOptions,
+      chromeMode,
     })
 
     await renderMedia({
@@ -243,6 +247,7 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       inputProps: props,
       browserExecutable,
       chromiumOptions,
+      chromeMode,
       timeoutInMilliseconds: 150_000,
     })
 
@@ -740,6 +745,7 @@ app.post('/remotion-render', async (req, res) => {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const browserExecutable = await getChromiumPath()
     const chromiumOptions = { disableWebSecurity: true, gl: 'swiftshader' }
+    const chromeMode = 'chrome'
 
     // Resolve the composition
     const composition = await selectComposition({
@@ -748,6 +754,7 @@ app.post('/remotion-render', async (req, res) => {
       inputProps: props,
       browserExecutable,
       chromiumOptions,
+      chromeMode,
     })
 
     await renderMedia({
@@ -758,6 +765,7 @@ app.post('/remotion-render', async (req, res) => {
       inputProps: props,
       browserExecutable,
       chromiumOptions,
+      chromeMode,
       timeoutInMilliseconds: 150_000,
       onProgress: ({ progress }) => {
         slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })

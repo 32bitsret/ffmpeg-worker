@@ -947,16 +947,12 @@ app.post('/render', async (req, res) => {
         // doesn't buffer indefinitely — amix duration=longest cuts at video end
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1', '-t', '7200'])
         
-        // Ensure we have a valid audio stream to mix into.
-        // We use anullsrc to create a silent base of the exact video duration,
-        // then mix the concatenated video audio (0:a) and the music (1:a) into it.
-        const totalDur = totalDuration || 30
+        // Mix video audio (boosted) with background music.
+        // -shortest caps output at video duration; looped music provides the full length.
         cmd = cmd.complexFilter([
-          `anullsrc=r=44100:cl=stereo:d=${totalDur}[silence]`,
-          `[0:a]aresample=44100,aformat=channel_layouts=stereo,atrim=duration=${totalDur},apad,volume=2.0[voice_padded]`,
-          `[1:a]aresample=44100,aformat=channel_layouts=stereo,${musicVolumeFilter}[music]`,
-          `[silence][voice_padded]amix=inputs=2:duration=first[base_audio]`,
-          `[base_audio][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+          `[0:a]aresample=44100,volume=2.0[voice]`,
+          `[1:a]aresample=44100,${musicVolumeFilter}[music]`,
+          `[voice][music]amix=inputs=2:duration=longest[aout]`,
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]',
           ...outputOptions,
@@ -1122,4 +1118,10 @@ app.get('/health', (_, res) => res.json({ ok: true }))
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg: `ffmpeg-worker listening on :${PORT}` }))
+  // Log FFmpeg version at startup so it's visible in Railway logs
+  const { execSync } = require('child_process')
+  try {
+    const ver = execSync('ffmpeg -version 2>&1 | head -1', { encoding: 'utf8' }).trim()
+    console.log(JSON.stringify({ ts: new Date().toISOString(), msg: 'FFmpeg version', version: ver }))
+  } catch {}
 })

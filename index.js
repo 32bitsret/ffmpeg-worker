@@ -226,12 +226,14 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const executablePath = await getChromiumPath()
     const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
+    const onBrowserDownload = () => ({ shouldDownload: false })
 
     const composition = await selectComposition({
       serveUrl: process.env.REMOTION_BUNDLE_URL,
       id: template,
       inputProps: props,
       chromiumOptions,
+      onBrowserDownload,
     })
 
     await renderMedia({
@@ -241,6 +243,7 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       outputLocation: renderPath,
       inputProps: props,
       chromiumOptions,
+      onBrowserDownload,
       timeoutInMilliseconds: 150_000,
     })
 
@@ -738,6 +741,7 @@ app.post('/remotion-render', async (req, res) => {
     const { renderMedia, selectComposition } = require('@remotion/renderer')
     const executablePath = await getChromiumPath()
     const chromiumOptions = { executablePath, disableWebSecurity: true, gl: 'swiftshader' }
+    const onBrowserDownload = () => ({ shouldDownload: false })
 
     // Resolve the composition
     const composition = await selectComposition({
@@ -745,6 +749,7 @@ app.post('/remotion-render', async (req, res) => {
       id: template,
       inputProps: props,
       chromiumOptions,
+      onBrowserDownload,
     })
 
     await renderMedia({
@@ -754,6 +759,7 @@ app.post('/remotion-render', async (req, res) => {
       outputLocation: renderPath,
       inputProps: props,
       chromiumOptions,
+      onBrowserDownload,
       timeoutInMilliseconds: 150_000,
       onProgress: ({ progress }) => {
         slog('remotion-render', 'Progress', { template, pct: Math.round(progress * 100) })

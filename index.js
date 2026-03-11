@@ -186,8 +186,30 @@ function cleanup(...files) {
 let _chromiumExecPath = null
 async function getChromiumPath() {
   if (!_chromiumExecPath) {
-    const chromium = require('@sparticuz/chromium')
-    _chromiumExecPath = await chromium.executablePath()
+    // Prefer explicit env override (e.g. set in Railway dashboard)
+    if (process.env.CHROMIUM_EXECUTABLE_PATH) {
+      _chromiumExecPath = process.env.CHROMIUM_EXECUTABLE_PATH
+    } else {
+      // Try to find system chromium (installed via nixpacks) — properly patchelf'd for Nix
+      const { execSync } = require('child_process')
+      const candidates = ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']
+      let systemPath = null
+      for (const bin of candidates) {
+        try {
+          systemPath = execSync(`which ${bin}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+          if (systemPath) break
+        } catch {}
+      }
+      if (systemPath) {
+        _chromiumExecPath = systemPath
+        slog('chromium', 'Using system chromium', { path: systemPath })
+      } else {
+        // Fall back to @sparticuz/chromium (works in Lambda-like envs)
+        const chromium = require('@sparticuz/chromium')
+        _chromiumExecPath = await chromium.executablePath()
+        slog('chromium', 'Using @sparticuz/chromium', { path: _chromiumExecPath })
+      }
+    }
   }
   return _chromiumExecPath
 }

@@ -205,8 +205,9 @@ async function getChromiumPath() {
       }
       if (systemPath) {
         _chromiumExecPath = systemPath
-        // Full Chrome binary: old --headless removed, must use new headless mode
-        _chromeMode = 'chrome'
+        // Full Chrome binary: old --headless removed, must use --headless=new.
+        // Remotion only passes --headless=new when chromeMode === 'chrome-for-testing'.
+        _chromeMode = 'chrome-for-testing'
         slog('chromium', 'Using system chromium', { path: systemPath, chromeMode: _chromeMode })
       } else {
         // Fall back to @sparticuz/chromium — provides chrome-headless-shell, uses legacy headless mode

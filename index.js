@@ -998,7 +998,6 @@ app.post('/render', async (req, res) => {
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]',
           ...outputOptions,
-          '-shortest'
         ])
       } else {
         cmd = cmd.videoCodec('libx264').audioCodec('aac')

@@ -1,6 +1,6 @@
 [phases.setup]
 # freefont_ttf, liberation_ttf, dejavu_fonts kept as fallbacks — bundled fonts in ./fonts/ take priority
-nixPkgs = ["nodejs_20", "ffmpeg_6", "freefont_ttf", "liberation_ttf", "dejavu_fonts", "fontconfig", "tesseract", "chromium", "nss", "nspr", "atk", "cups", "dbus", "expat", "libdrm", "libxkbcommon", "mesa", "xorg.libX11", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "xorg.libXcursor", "xorg.libXi", "xorg.libXrender", "xorg.libXtst", "alsa-lib", "pango", "cairo", "glib"]
+nixPkgs = ["nodejs_20", "ffmpeg_6", "noto-fonts-emoji", "freefont_ttf", "liberation_ttf", "dejavu_fonts", "fontconfig", "tesseract", "chromium", "nss", "nspr", "atk", "cups", "dbus", "expat", "libdrm", "libxkbcommon", "mesa", "xorg.libX11", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "xorg.libXcursor", "xorg.libXi", "xorg.libXrender", "xorg.libXtst", "alsa-lib", "pango", "cairo", "glib"]
 
 [phases.install]
 cmds = ["npm ci"]

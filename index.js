@@ -990,13 +990,14 @@ app.post('/render', async (req, res) => {
         cmd = cmd.input(musicFile).inputOptions(['-stream_loop', '-1', '-t', '7200'])
         
         // Mix video audio (boosted) with background music.
-        // -shortest caps output at video duration; looped music provides the full length.
+        // duration=first ensures the audio mix ends exactly when the video clips end.
         cmd = cmd.complexFilter([
-          `[0:a]aresample=44100,volume=2.0[voice]`,
+          `[0:a]aresample=44100:async=1,volume=2.0[voice]`,
           `[1:a]aresample=44100,${musicVolumeFilter}[music]`,
-          `[voice][music]amix=inputs=2:duration=longest[aout]`,
+          `[voice][music]amix=inputs=2:duration=first[aout]`,
         ]).outputOptions([
           '-map 0:v:0', '-map [aout]',
+          '-async 1',
           ...outputOptions,
         ])
       } else {

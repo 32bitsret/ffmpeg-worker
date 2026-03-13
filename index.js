@@ -489,7 +489,7 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
     const filters = []
 
     // 1. Setup background
-    if (slide.type === 'image') {
+    if (slide.type === 'image' && slide.content) {
       const imgPath = tmpFile('.png')
       await download(slide.content, imgPath)
       // Explicit -r 25 so zoompan's frame-count (d=frames) is accurate

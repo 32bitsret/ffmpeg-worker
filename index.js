@@ -467,11 +467,12 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
   // Falls back to FFmpeg if REMOTION_BUNDLE_URL is not set or Remotion render fails.
   // Also use Remotion for image slides that have hierarchical text (header/description) so
   // they get animated text entrance effects and a proper scrim over the photo.
-  if (slide.type === 'image' && slide.content && (slide.header || slide.leadCopy) && process.env.REMOTION_BUNDLE_URL) {
-    slog('slide-clip', 'Rendering image+text slide via Remotion', { header: slide.header, hasLeadCopy: !!slide.leadCopy, duration })
+  if (slide.type === 'image' && slide.content && (slide.headline || slide.subHeadline || slide.leadCopy) && process.env.REMOTION_BUNDLE_URL) {
+    slog('slide-clip', 'Rendering image+text slide via Remotion', { headline: slide.headline, subHeadline: slide.subHeadline, hasLeadCopy: !!slide.leadCopy, duration })
     const remotionPath = await renderRemotionClip('image-slide', {
       imageUrl: slide.content,
-      header: slide.header || '',
+      headline: slide.headline || '',
+      subHeadline: slide.subHeadline || '',
       leadCopy: slide.leadCopy || '',
       fontVibe: slide.fontVibe || 'bold',
       accentColor: accentColor || '#7c3aed',
@@ -521,9 +522,9 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
       cmd = cmd.input(`color=c=${hex}:r=25:s=1080x1920:d=${duration + 1}`).inputOptions(['-f lavfi'])
     }
 
-    // 2. Text overlay — for text slides use content; for image slides use header as FFmpeg fallback
+    // 2. Text overlay — for text slides use content; for image slides use headline as FFmpeg fallback
     const bgIsLight = isLightColor(slide.backgroundColor || canvasColor)
-    const textContent = slide.type === 'text' ? slide.content : (slide.header || '')
+    const textContent = slide.type === 'text' ? slide.content : (slide.headline || '')
     const textFilter = buildRichTextFilter(
       textContent,
       slide.fontVibe || 'bold',

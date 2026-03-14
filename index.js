@@ -979,9 +979,6 @@ app.post('/render', async (req, res) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
       
       const outputOptions = ['-c:v libx264', '-c:a aac', '-preset fast', '-crf 20', '-movflags +faststart', '-threads 4']
-      if (totalDuration) {
-        outputOptions.push('-t', totalDuration.toString())
-      }
 
       if (musicFile) {
         const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)

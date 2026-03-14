@@ -681,8 +681,10 @@ app.post('/composite', async (req, res) => {
 
         // Robust mapping: Use video from input 0 and audio from input 1 (voiceover).
         // This prevents FFmpeg from selecting silent audio tracks from input 0.
+        // -r 30 forces CFR output — Veo outputs VFR video which causes Remotion's
+        // <Video> component to freeze when seeking past VFR timestamp boundaries.
         const outputOpts = [
-          '-preset fast', '-crf 23', '-movflags +faststart',
+          '-r 30', '-preset fast', '-crf 23', '-movflags +faststart',
           '-ar 44100', '-ac 2',
           '-t', (duration || 10).toString()
         ]
@@ -978,7 +980,8 @@ app.post('/render', async (req, res) => {
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
       
-      const outputOptions = ['-c:v libx264', '-c:a aac', '-preset fast', '-crf 20', '-movflags +faststart', '-threads 4']
+      // -r 30 normalizes any VFR clips (e.g. Veo output) to CFR before Remotion subtitle pass
+      const outputOptions = ['-r 30', '-c:v libx264', '-c:a aac', '-preset fast', '-crf 20', '-movflags +faststart', '-threads 4']
 
       if (musicFile) {
         const musicVolumeFilter = buildMusicVolumeFilter(musicVolumeTimeline, musicVolume)

@@ -465,6 +465,21 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
 
   // Use Remotion for text slides — far superior typography and animations vs FFmpeg drawtext.
   // Falls back to FFmpeg if REMOTION_BUNDLE_URL is not set or Remotion render fails.
+  // Also use Remotion for image slides that have hierarchical text (header/description) so
+  // they get animated text entrance effects and a proper scrim over the photo.
+  if (slide.type === 'image' && slide.content && (slide.header || slide.description) && process.env.REMOTION_BUNDLE_URL) {
+    slog('slide-clip', 'Rendering image+text slide via Remotion', { header: slide.header, hasDesc: !!slide.description, duration })
+    const remotionPath = await renderRemotionClip('image-slide', {
+      imageUrl: slide.content,
+      header: slide.header || '',
+      description: slide.description || '',
+      fontVibe: slide.fontVibe || 'bold',
+      accentColor: accentColor || '#7c3aed',
+    }, duration, 30, watermark)
+    if (remotionPath) return { path: remotionPath, duration }
+    slog('slide-clip', 'Remotion image-slide failed — falling back to FFmpeg', { content: slide.content })
+  }
+
   if (slide.type === 'text' && process.env.REMOTION_BUNDLE_URL) {
     const bgColor = slide.backgroundColor || canvasColor || '#1a1a2e'
     const accent = accentColor || canvasColor || '#7c3aed'
@@ -474,7 +489,9 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
       fontVibe: slide.fontVibe || 'bold',
       backgroundColor: bgColor,
       accentColor: accent,
-    }, duration, 25, watermark) // 25fps matches FFmpeg slides
+      ...(slide.subtext && { subtext: slide.subtext }),
+      ...(slide.textAlign && { textAlign: slide.textAlign }),
+    }, duration, 30, watermark)
     if (remotionPath) {
       return { path: remotionPath, duration }
     }
@@ -504,10 +521,11 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
       cmd = cmd.input(`color=c=${hex}:r=25:s=1080x1920:d=${duration + 1}`).inputOptions(['-f lavfi'])
     }
 
-    // 2. Text with fade-in (text slides only)
+    // 2. Text overlay — for text slides use content; for image slides use header as FFmpeg fallback
     const bgIsLight = isLightColor(slide.backgroundColor || canvasColor)
+    const textContent = slide.type === 'text' ? slide.content : (slide.header || '')
     const textFilter = buildRichTextFilter(
-      slide.type === 'text' ? slide.content : '',
+      textContent,
       slide.fontVibe || 'bold',
       true,
       bgIsLight,

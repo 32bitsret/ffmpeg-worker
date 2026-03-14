@@ -467,12 +467,12 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
   // Falls back to FFmpeg if REMOTION_BUNDLE_URL is not set or Remotion render fails.
   // Also use Remotion for image slides that have hierarchical text (header/description) so
   // they get animated text entrance effects and a proper scrim over the photo.
-  if (slide.type === 'image' && slide.content && (slide.header || slide.description) && process.env.REMOTION_BUNDLE_URL) {
-    slog('slide-clip', 'Rendering image+text slide via Remotion', { header: slide.header, hasDesc: !!slide.description, duration })
+  if (slide.type === 'image' && slide.content && (slide.header || slide.leadCopy) && process.env.REMOTION_BUNDLE_URL) {
+    slog('slide-clip', 'Rendering image+text slide via Remotion', { header: slide.header, hasLeadCopy: !!slide.leadCopy, duration })
     const remotionPath = await renderRemotionClip('image-slide', {
       imageUrl: slide.content,
       header: slide.header || '',
-      description: slide.description || '',
+      leadCopy: slide.leadCopy || '',
       fontVibe: slide.fontVibe || 'bold',
       accentColor: accentColor || '#7c3aed',
     }, duration, 30, watermark)

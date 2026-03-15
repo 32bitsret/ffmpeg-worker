@@ -292,7 +292,7 @@ async function renderRemotionClip(template, props, durationSecs, fps = 30, water
       const watermarkedPath = tmpFile('.mp4')
       await new Promise((resolve, reject) => {
         ffmpeg(renderPath)
-          .videoFilters(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+          .videoFilters(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=132:fontcolor=white@0.5:x=20:y=20`)
           .outputOptions(['-c:a copy', '-preset fast', '-crf 23'])
           .output(watermarkedPath)
           .on('end', resolve)
@@ -537,7 +537,7 @@ async function createSlideClip(slide, canvasColor, idx, watermark = false, accen
 
     // 3. Watermark
     if (watermark && FONT_PATH) {
-      filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+      filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=132:fontcolor=white@0.5:x=20:y=20`)
     }
 
     // 4. Apply filters only if non-empty (empty videoFilters([]) emits -vf "" which FFmpeg rejects)
@@ -693,7 +693,7 @@ app.post('/composite', async (req, res) => {
           if (textFilter) videoFilters.push(textFilter)
 
           if (FONT_PATH && watermark === true) {
-            videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+            videoFilters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=132:fontcolor=white@0.5:x=20:y=20`)
           }
         }
 
@@ -926,7 +926,7 @@ app.post('/remotion-render', async (req, res) => {
       await new Promise((resolve, reject) => {
         const filters = []
         if (FONT_PATH) {
-          filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=44:fontcolor=white@0.5:x=20:y=20`)
+          filters.push(`drawtext=fontfile='${FONT_PATH}':text='demostudio':fontsize=132:fontcolor=white@0.5:x=20:y=20`)
         }
 
         ffmpeg(videoOut)
